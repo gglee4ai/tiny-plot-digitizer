@@ -204,14 +204,12 @@ ui <- fluidPage(
                     selected = "", selectize = FALSE),
         selectInput("dataset", "Dataset", choices = setNames("", "Select CSV"),
                     selected = "", selectize = FALSE),
-        actionButton("refresh", "목록 새로고침", width = "100%"),
         selectInput("point", "Point", choices = NULL),
         div(
           class = "point-nav",
           actionButton("previous_point", "이전 [", title = "이전 포인트 ([ 또는 Shift+←)"),
           actionButton("next_point", "다음 ]", title = "다음 포인트 (] 또는 Shift+→)")
         ),
-        numericInput("step", "Move step (pixel)", value = 1, min = 1, max = 20, step = 1),
         div(
           class = "arrow-grid",
           actionButton("up", "↑", class = "arrow-up", title = "위로 이동"),
@@ -288,22 +286,6 @@ server <- function(input, output, session) {
     update_catalog(folders()[[input$folder]])
   })
 
-  observeEvent(input$refresh, {
-    current_folder <- input$folder
-    current <- input$dataset
-    folders(discover_folders())
-    if (is.null(current_folder) || !nzchar(current_folder) || !current_folder %in% names(folders())) {
-      catalog(list())
-      clear_dataset()
-      update_folders()
-      updateSelectInput(session, "dataset", choices = setNames("", "Select CSV"), selected = "")
-      return()
-    }
-    update_folders(current_folder)
-    selected <- if (!is.null(current) && current %in% names(catalog())) current else NULL
-    update_catalog(folders()[[current_folder]], selected)
-  })
-
   point_labels <- function(data, calibration) {
     x <- data[[calibration$x$column]]
     y <- data[[calibration$y$column]]
@@ -375,15 +357,14 @@ server <- function(input, output, session) {
 
   move_selected <- function(direction) {
     row <- selected_row()
-    step <- max(1, round(input$step))
     data <- rv$data
     width <- ncol(rv$image)
     height <- nrow(rv$image)
 
-    if (direction == "left") data$pixel_x[row] <- max(0, data$pixel_x[row] - step)
-    if (direction == "right") data$pixel_x[row] <- min(width, data$pixel_x[row] + step)
-    if (direction == "up") data$pixel_y[row] <- max(0, data$pixel_y[row] - step)
-    if (direction == "down") data$pixel_y[row] <- min(height, data$pixel_y[row] + step)
+    if (direction == "left") data$pixel_x[row] <- max(0, data$pixel_x[row] - 1)
+    if (direction == "right") data$pixel_x[row] <- min(width, data$pixel_x[row] + 1)
+    if (direction == "up") data$pixel_y[row] <- max(0, data$pixel_y[row] - 1)
+    if (direction == "down") data$pixel_y[row] <- min(height, data$pixel_y[row] + 1)
 
     rv$data <- recalculate_row(data, row)
     rv$changed <- union(rv$changed, row)
