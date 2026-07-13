@@ -282,7 +282,7 @@ ui <- fluidPage(
         class = "control-panel",
         selectInput("folder", "Folder (data-raw)", choices = setNames("", "Select folder"),
                     selected = "", selectize = FALSE),
-        selectInput("dataset", "Dataset", choices = setNames("", "Select CSV"),
+        selectInput("dataset", "Figure", choices = setNames("", "Select figure"),
                     selected = "", selectize = FALSE),
         selectInput("point", "Point", choices = NULL),
         div(
@@ -324,8 +324,53 @@ server <- function(input, output, session) {
   rv <- reactiveValues(
     data = NULL, original = NULL, image = NULL, raster = NULL,
     dataset = NULL, lines = NULL, header_index = NULL,
-    columns_on_disk = NULL, changed = integer(), status = ""
+    columns_on_disk = NULL, changed = integer(), status = "",
+    pending_switch_status = NULL
   )
+
+  save_changes <- function(auto = FALSE) {
+    if (is.null(rv$data) || is.null(rv$dataset) || !length(rv$changed)) {
+      return(NULL)
+    }
+
+    calibration <- rv$dataset$calibration
+    columns <- c("pixel_x", "pixel_y")
+    if (calibration$type == "formula") {
+      paired_columns <- c("YS_ksi", "YS_MPa", "UTS_ksi", "UTS_MPa",
+                          "strain_rate_min", "strain_rate_s", "test_temp_C", "test_temp_F")
+      columns <- unique(c(
+        columns,
+        calibration$x$column,
+        calibration$y$column,
+        paired_columns
+      ))
+    }
+    columns <- intersect(columns, rv$columns_on_disk)
+    header <- strsplit(rv$lines[rv$header_index], ",", fixed = TRUE)[[1]]
+
+    for (row in rv$changed) {
+      line_index <- rv$header_index + row
+      fields <- strsplit(rv$lines[line_index], ",", fixed = TRUE)[[1]]
+      for (column in columns) {
+        index <- match(column, header)
+        if (!is.na(index)) fields[index] <- format_csv_value(rv$data[[column]][row], column)
+      }
+      rv$lines[line_index] <- paste(fields, collapse = ",")
+    }
+
+    writeLines(rv$lines, rv$dataset$path, useBytes = TRUE)
+    rv$original <- rv$data
+    rv$changed <- integer()
+
+    prefix <- if (auto) "자동 저장됨:" else "저장됨:"
+    message <- paste(prefix, basename(rv$dataset$path))
+    if (auto) {
+      rv$pending_switch_status <- message
+    } else {
+      rv$status <- message
+    }
+    message
+  }
 
   clear_dataset <- function() {
     rv$data <- NULL
@@ -353,8 +398,12 @@ server <- function(input, output, session) {
       choices <- setNames(names(datasets), labels)
       if (is.null(selected)) selected <- unname(choices[1])
     } else {
-      choices <- setNames("", "No compatible CSV")
+      choices <- setNames("", "No compatible figure")
       selected <- ""
+      if (!is.null(rv$pending_switch_status)) {
+        rv$status <- rv$pending_switch_status
+        rv$pending_switch_status <- NULL
+      }
     }
     updateSelectInput(session, "dataset", choices = choices, selected = selected)
   }
@@ -363,6 +412,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$folder, {
     req(input$folder %in% names(folders()))
+    save_changes(auto = TRUE)
     update_catalog(folders()[[input$folder]])
   })
 
@@ -401,13 +451,21 @@ server <- function(input, output, session) {
     rv$header_index <- which(nzchar(lines) & !grepl("^#", lines))[1]
     rv$columns_on_disk <- columns_on_disk
     rv$changed <- integer()
-    rv$status <- ""
+    rv$status <- if (is.null(rv$pending_switch_status)) {
+      ""
+    } else {
+      rv$pending_switch_status
+    }
+    rv$pending_switch_status <- NULL
 
     labels <- point_labels(data, calibration)
     updateSelectInput(session, "point", choices = setNames(seq_len(nrow(data)), labels), selected = 1)
   }
 
-  observeEvent(input$dataset, load_dataset(input$dataset))
+  observeEvent(input$dataset, {
+    save_changes(auto = TRUE)
+    load_dataset(input$dataset)
+  })
 
   selected_row <- reactive({
     req(rv$data, input$point)
@@ -525,36 +583,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$save, {
-    req(rv$data, length(rv$changed) > 0)
-    calibration <- rv$dataset$calibration
-    columns <- c("pixel_x", "pixel_y")
-    if (calibration$type == "formula") {
-      paired_columns <- c("YS_ksi", "YS_MPa", "UTS_ksi", "UTS_MPa",
-                          "strain_rate_min", "strain_rate_s", "test_temp_C", "test_temp_F")
-      columns <- unique(c(
-        columns,
-        calibration$x$column,
-        calibration$y$column,
-        paired_columns
-      ))
-    }
-    columns <- intersect(columns, rv$columns_on_disk)
-    header <- strsplit(rv$lines[rv$header_index], ",", fixed = TRUE)[[1]]
-
-    for (row in rv$changed) {
-      line_index <- rv$header_index + row
-      fields <- strsplit(rv$lines[line_index], ",", fixed = TRUE)[[1]]
-      for (column in columns) {
-        index <- match(column, header)
-        if (!is.na(index)) fields[index] <- format_csv_value(rv$data[[column]][row], column)
-      }
-      rv$lines[line_index] <- paste(fields, collapse = ",")
-    }
-
-    writeLines(rv$lines, rv$dataset$path, useBytes = TRUE)
-    rv$original <- rv$data
-    rv$changed <- integer()
-    rv$status <- paste("저장됨:", basename(rv$dataset$path))
+    req(!is.null(save_changes(auto = FALSE)))
   })
 
   output$status <- renderText(rv$status)
