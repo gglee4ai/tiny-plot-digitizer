@@ -220,6 +220,7 @@ sync_units <- function(data, row, changed_column) {
 }
 
 format_csv_value <- function(value, column) {
+  if (!length(value) || is.na(value)) return("")
   if (column %in% c("pixel_x", "pixel_y")) return(sprintf("%d", round(value)))
   if (grepl("fluence_.*1e22", column)) return(sprintf("%.3f", value))
   if (column == "strain_rate_min") return(sprintf("%.6f", value))
@@ -227,6 +228,135 @@ format_csv_value <- function(value, column) {
   if (column %in% c("test_temp_C", "test_temp_F")) return(sprintf("%.1f", value))
   if (grepl("_(MPa|ksi|pct)$", column)) return(sprintf("%.1f", value))
   as.character(value)
+}
+
+split_csv_fields <- function(line) {
+  characters <- strsplit(line, "", fixed = TRUE)[[1]]
+  fields <- character()
+  field <- character()
+  quoted <- FALSE
+  index <- 1L
+
+  while (index <= length(characters)) {
+    character <- characters[index]
+    if (character == '"') {
+      field <- c(field, character)
+      if (quoted && index < length(characters) && characters[index + 1L] == '"') {
+        field <- c(field, '"')
+        index <- index + 1L
+      } else {
+        quoted <- !quoted
+      }
+    } else if (character == "," && !quoted) {
+      fields <- c(fields, paste(field, collapse = ""))
+      field <- character()
+    } else {
+      field <- c(field, character)
+    }
+    index <- index + 1L
+  }
+
+  c(fields, paste(field, collapse = ""))
+}
+
+escape_csv_field <- function(value) {
+  if (!length(value) || is.na(value)) return("")
+  value <- as.character(value)
+  if (grepl('[,"\\r\\n]', value) || grepl('^\\s|\\s$', value)) {
+    return(paste0('"', gsub('"', '""', value, fixed = TRUE), '"'))
+  }
+  value
+}
+
+update_csv_row <- function(line, data, row, columns, columns_on_disk) {
+  fields <- split_csv_fields(line)
+  if (length(fields) != length(columns_on_disk)) {
+    stop("CSV 행의 필드 수가 헤더와 일치하지 않습니다.")
+  }
+
+  for (column in intersect(columns, columns_on_disk)) {
+    index <- match(column, columns_on_disk)
+    fields[index] <- escape_csv_field(format_csv_value(data[[column]][row], column))
+  }
+  paste(fields, collapse = ",")
+}
+
+copy_csv_fields <- function(target, source, columns, columns_on_disk) {
+  target_fields <- split_csv_fields(target)
+  source_fields <- split_csv_fields(source)
+  if (length(target_fields) != length(columns_on_disk) ||
+      length(source_fields) != length(columns_on_disk)) {
+    stop("CSV 행의 필드 수가 헤더와 일치하지 않습니다.")
+  }
+
+  indexes <- match(intersect(columns, columns_on_disk), columns_on_disk)
+  target_fields[indexes] <- source_fields[indexes]
+  paste(target_fields, collapse = ",")
+}
+
+marker_glyph <- function(marker) {
+  glyphs <- c(
+    circle = "○", triangle_down = "▽", triangle_left = "◁", square = "□",
+    diamond = "◇", triangle_up = "△", triangle_right = "▷",
+    circle_filled = "●", square_filled = "■"
+  )
+  ifelse(marker %in% names(glyphs), unname(glyphs[marker]), "·")
+}
+
+build_series_catalog <- function(data, calibration) {
+  if (!nrow(data)) return(NULL)
+
+  marker <- if ("marker" %in% names(data)) as.character(data$marker) else rep("point", nrow(data))
+  condition_columns <- grep(
+    "temp|temperature|irradiation|condition|material|heat|fluence_reported",
+    names(data), value = TRUE, ignore.case = TRUE
+  )
+  axis_columns <- if (calibration$type == "formula") {
+    c(calibration$x$column, calibration$y$column)
+  } else {
+    character()
+  }
+  condition_columns <- setdiff(condition_columns, c("marker", "pixel_x", "pixel_y", axis_columns))
+  profile_columns <- intersect(c("marker", condition_columns), names(data))
+
+  marker_levels <- unique(marker)
+  representative_rows <- vapply(marker_levels, function(marker_value) {
+    rows <- which(marker == marker_value)
+    if (!length(profile_columns)) return(rows[1])
+    keys <- apply(data[rows, profile_columns, drop = FALSE], 1, function(values) {
+      paste(ifelse(is.na(values), "<NA>", as.character(values)), collapse = "\r")
+    })
+    counts <- table(keys)
+    rows[match(names(counts)[which.max(counts)], keys)]
+  }, integer(1))
+
+  profiles <- data[representative_rows, profile_columns, drop = FALSE]
+  varying_columns <- profile_columns[vapply(profiles, function(values) {
+    length(unique(ifelse(is.na(values), "<NA>", as.character(values)))) > 1
+  }, logical(1))]
+  label_columns <- setdiff(varying_columns, "marker")
+
+  labels <- vapply(seq_along(marker_levels), function(index) {
+    marker_value <- marker_levels[index]
+    label <- paste(marker_glyph(marker_value), marker_value)
+    if (length(label_columns)) {
+      details <- vapply(label_columns, function(column) {
+        value <- profiles[[column]][index]
+        if (is.na(value)) value <- "NA"
+        paste0(column, "=", value)
+      }, character(1))
+      label <- paste(label, paste(details, collapse = " | "), sep = " | ")
+    }
+    label
+  }, character(1))
+
+  list(
+    profiles = profiles,
+    profile_columns = profile_columns,
+    representative_rows = representative_rows,
+    marker_levels = marker_levels,
+    choices = setNames(seq_along(marker_levels), labels)
+  )
 }
 
 ui <- fluidPage(
@@ -247,6 +377,9 @@ ui <- fluidPage(
       .arrow-down { grid-column: 2; grid-row: 3; }
       .status-line { min-height: 22px; margin-top: 8px; font-size: 12px; }
       .point-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+      .series-actions { display: grid; grid-template-columns: 1fr 38px 38px; gap: 5px; align-items: end; }
+      .series-actions .form-group { margin-bottom: 10px; }
+      .series-actions .btn { width: 38px; height: 34px; padding: 5px; margin-bottom: 10px; border-radius: 4px; }
       .point-values { font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
       .plot-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
       .btn-primary { background: #2f5d50; border-color: #2f5d50; }
@@ -286,6 +419,14 @@ ui <- fluidPage(
                     selected = "", selectize = FALSE),
         selectInput("point", "Point", choices = NULL),
         div(
+          class = "series-actions",
+          selectInput("series", "Series", choices = NULL, selectize = FALSE),
+          actionButton("add_point", label = NULL, icon = icon("plus"),
+                       title = "선택한 Series의 포인트 추가"),
+          actionButton("delete_point", label = NULL, icon = icon("trash"),
+                       title = "선택한 포인트 삭제")
+        ),
+        div(
           class = "point-nav",
           actionButton("previous_point", "이전 [", title = "이전 포인트 ([ 또는 Shift+←)"),
           actionButton("next_point", "다음 ]", title = "다음 포인트 (] 또는 Shift+→)")
@@ -322,45 +463,24 @@ server <- function(input, output, session) {
   folders <- reactiveVal(discover_folders())
   catalog <- reactiveVal(list())
   rv <- reactiveValues(
-    data = NULL, original = NULL, image = NULL, raster = NULL,
-    dataset = NULL, lines = NULL, header_index = NULL,
-    columns_on_disk = NULL, changed = integer(), status = "",
-    pending_switch_status = NULL
+    data = NULL, image = NULL, raster = NULL, dataset = NULL,
+    prefix_lines = NULL, row_lines = NULL, suffix_lines = NULL,
+    columns_on_disk = NULL, dirty = FALSE, undo_stack = list(),
+    series_catalog = NULL, add_mode = FALSE, add_series = NULL,
+    selected = NULL, status = "", pending_switch_status = NULL
   )
 
   save_changes <- function(auto = FALSE) {
-    if (is.null(rv$data) || is.null(rv$dataset) || !length(rv$changed)) {
-      return(NULL)
-    }
+    if (is.null(rv$data) || is.null(rv$dataset) || !rv$dirty) return(NULL)
 
-    calibration <- rv$dataset$calibration
-    columns <- c("pixel_x", "pixel_y")
-    if (calibration$type == "formula") {
-      paired_columns <- c("YS_ksi", "YS_MPa", "UTS_ksi", "UTS_MPa",
-                          "strain_rate_min", "strain_rate_s", "test_temp_C", "test_temp_F")
-      columns <- unique(c(
-        columns,
-        calibration$x$column,
-        calibration$y$column,
-        paired_columns
-      ))
-    }
-    columns <- intersect(columns, rv$columns_on_disk)
-    header <- strsplit(rv$lines[rv$header_index], ",", fixed = TRUE)[[1]]
-
-    for (row in rv$changed) {
-      line_index <- rv$header_index + row
-      fields <- strsplit(rv$lines[line_index], ",", fixed = TRUE)[[1]]
-      for (column in columns) {
-        index <- match(column, header)
-        if (!is.na(index)) fields[index] <- format_csv_value(rv$data[[column]][row], column)
-      }
-      rv$lines[line_index] <- paste(fields, collapse = ",")
-    }
-
-    writeLines(rv$lines, rv$dataset$path, useBytes = TRUE)
-    rv$original <- rv$data
-    rv$changed <- integer()
+    stopifnot(nrow(rv$data) == length(rv$row_lines))
+    writeLines(
+      c(rv$prefix_lines, rv$row_lines, rv$suffix_lines),
+      rv$dataset$path,
+      useBytes = TRUE
+    )
+    rv$dirty <- FALSE
+    rv$undo_stack <- list()
 
     prefix <- if (auto) "자동 저장됨:" else "저장됨:"
     message <- paste(prefix, basename(rv$dataset$path))
@@ -374,13 +494,22 @@ server <- function(input, output, session) {
 
   clear_dataset <- function() {
     rv$data <- NULL
-    rv$original <- NULL
     rv$image <- NULL
     rv$raster <- NULL
     rv$dataset <- NULL
-    rv$changed <- integer()
+    rv$prefix_lines <- NULL
+    rv$row_lines <- NULL
+    rv$suffix_lines <- NULL
+    rv$columns_on_disk <- NULL
+    rv$dirty <- FALSE
+    rv$undo_stack <- list()
+    rv$series_catalog <- NULL
+    rv$add_mode <- FALSE
+    rv$add_series <- NULL
+    rv$selected <- NULL
     rv$status <- ""
     updateSelectInput(session, "point", choices = character(), selected = character())
+    updateSelectInput(session, "series", choices = character(), selected = character())
   }
 
   update_folders <- function(selected = NULL) {
@@ -419,9 +548,94 @@ server <- function(input, output, session) {
   point_labels <- function(data, calibration) {
     values <- axis_values(data, calibration)
     marker <- if ("marker" %in% names(data)) data$marker else "point"
-    temperature <- if ("test_temp_C" %in% names(data)) paste0(data$test_temp_C, " C") else ""
+    temperature <- if ("test_temp_C" %in% names(data)) {
+      paste0(data$test_temp_C, " C")
+    } else if ("test_temp_F" %in% names(data)) {
+      paste0(data$test_temp_F, " F")
+    } else {
+      ""
+    }
     sprintf("%02d | %s | %s | x=%s | y=%s", seq_len(nrow(data)), marker, temperature,
             format(values$x, digits = 4), format(values$y, digits = 5))
+  }
+
+  series_index_for_row <- function(row) {
+    series <- rv$series_catalog
+    if (is.null(series)) return(NULL)
+    if (!("marker" %in% names(rv$data))) return(1L)
+    match(as.character(rv$data$marker[row]), series$marker_levels)
+  }
+
+  select_series_for_row <- function(row) {
+    index <- series_index_for_row(row)
+    if (is.null(index) || is.na(index)) return(invisible())
+    freezeReactiveValue(input, "series")
+    updateSelectInput(session, "series", selected = as.character(index))
+  }
+
+  refresh_controls <- function(selected = 1L) {
+    req(rv$data, rv$dataset)
+    selected <- max(1L, min(as.integer(selected), nrow(rv$data)))
+    rv$selected <- selected
+    labels <- point_labels(rv$data, rv$dataset$calibration)
+    updateSelectInput(
+      session, "point",
+      choices = setNames(seq_len(nrow(rv$data)), labels),
+      selected = selected
+    )
+
+    rv$series_catalog <- build_series_catalog(rv$data, rv$dataset$calibration)
+    series <- rv$series_catalog
+    freezeReactiveValue(input, "series")
+    updateSelectInput(
+      session, "series",
+      choices = series$choices,
+      selected = as.character(series_index_for_row(selected))
+    )
+  }
+
+  set_add_mode <- function(active, series = NULL) {
+    rv$add_mode <- active
+    rv$add_series <- if (active) as.integer(series) else NULL
+    updateActionButton(
+      session, "add_point",
+      label = NULL,
+      icon = icon(if (active) "xmark" else "plus")
+    )
+  }
+
+  push_undo <- function(row) {
+    rv$undo_stack[[length(rv$undo_stack) + 1L]] <- list(
+      data = rv$data,
+      row_lines = rv$row_lines,
+      selected = row,
+      dirty = rv$dirty
+    )
+    if (length(rv$undo_stack) > 100L) rv$undo_stack <- tail(rv$undo_stack, 100L)
+  }
+
+  mark_changed <- function(status = "저장되지 않은 변경") {
+    rv$dirty <- TRUE
+    rv$status <- status
+  }
+
+  updated_value_columns <- function() {
+    calibration <- rv$dataset$calibration
+    columns <- c("pixel_x", "pixel_y")
+    if (calibration$type == "formula") {
+      columns <- c(
+        columns, calibration$x$column, calibration$y$column,
+        "YS_ksi", "YS_MPa", "UTS_ksi", "UTS_MPa",
+        "strain_rate_min", "strain_rate_s", "test_temp_C", "test_temp_F"
+      )
+    }
+    unique(intersect(columns, rv$columns_on_disk))
+  }
+
+  update_row_line <- function(row, columns = updated_value_columns()) {
+    rv$row_lines[row] <- update_csv_row(
+      rv$row_lines[row], rv$data, row, columns, rv$columns_on_disk
+    )
   }
 
   load_dataset <- function(key) {
@@ -442,24 +656,30 @@ server <- function(input, output, session) {
     source_image <- png::readPNG(dataset$source_path)
     source_gray <- if (length(dim(source_image)) == 2) source_image else source_image[, , 1]
 
+    header_index <- which(nzchar(lines) & !grepl("^#", lines))[1]
+    body_end <- header_index + nrow(data)
+    if (is.na(header_index) || body_end > length(lines)) {
+      stop("CSV 본문 행을 원문과 대응시킬 수 없습니다: ", dataset$path)
+    }
+
     rv$data <- data
-    rv$original <- data
     rv$image <- source_gray
     rv$raster <- as.raster(ifelse(source_gray > 0.5, "white", "black"))
     rv$dataset <- dataset
-    rv$lines <- lines
-    rv$header_index <- which(nzchar(lines) & !grepl("^#", lines))[1]
+    rv$prefix_lines <- lines[seq_len(header_index)]
+    rv$row_lines <- lines[header_index + seq_len(nrow(data))]
+    rv$suffix_lines <- if (body_end < length(lines)) lines[(body_end + 1L):length(lines)] else character()
     rv$columns_on_disk <- columns_on_disk
-    rv$changed <- integer()
+    rv$dirty <- FALSE
+    rv$undo_stack <- list()
+    set_add_mode(FALSE)
     rv$status <- if (is.null(rv$pending_switch_status)) {
       ""
     } else {
       rv$pending_switch_status
     }
     rv$pending_switch_status <- NULL
-
-    labels <- point_labels(data, calibration)
-    updateSelectInput(session, "point", choices = setNames(seq_len(nrow(data)), labels), selected = 1)
+    refresh_controls(1L)
   }
 
   observeEvent(input$dataset, {
@@ -468,21 +688,37 @@ server <- function(input, output, session) {
   })
 
   selected_row <- reactive({
-    req(rv$data, input$point)
-    row <- as.integer(input$point)
+    req(rv$data, rv$selected)
+    row <- as.integer(rv$selected)
     validate(need(row >= 1 && row <= nrow(rv$data), "Select a point"))
     row
   })
 
+  select_point <- function(row) {
+    row <- max(1L, min(as.integer(row), nrow(rv$data)))
+    rv$selected <- row
+    updateSelectInput(session, "point", selected = row)
+    select_series_for_row(row)
+  }
+
   navigate_point <- function(direction) {
     row <- selected_row()
     next_row <- if (direction == "previous") max(1, row - 1) else min(nrow(rv$data), row + 1)
-    updateSelectInput(session, "point", selected = next_row)
+    select_point(next_row)
   }
 
   observeEvent(input$previous_point, navigate_point("previous"))
   observeEvent(input$next_point, navigate_point("next"))
   observeEvent(input$key_point_nav, navigate_point(input$key_point_nav))
+
+  observeEvent(input$point, {
+    req(rv$data, input$point)
+    row <- as.integer(input$point)
+    if (row >= 1L && row <= nrow(rv$data)) {
+      rv$selected <- row
+      select_series_for_row(row)
+    }
+  }, ignoreInit = TRUE)
 
   recalculate_row <- function(data, row) {
     calibration <- rv$dataset$calibration
@@ -497,6 +733,7 @@ server <- function(input, output, session) {
 
   move_selected <- function(direction) {
     row <- selected_row()
+    push_undo(row)
     data <- rv$data
     width <- ncol(rv$image)
     height <- nrow(rv$image)
@@ -507,8 +744,9 @@ server <- function(input, output, session) {
     if (direction == "down") data$pixel_y[row] <- min(height, data$pixel_y[row] + 1)
 
     rv$data <- recalculate_row(data, row)
-    rv$changed <- union(rv$changed, row)
-    rv$status <- "저장되지 않은 변경"
+    update_row_line(row)
+    mark_changed()
+    refresh_controls(row)
   }
 
   observeEvent(input$left, move_selected("left"))
@@ -518,10 +756,18 @@ server <- function(input, output, session) {
   observeEvent(input$key_move, move_selected(input$key_move))
 
   observeEvent(input$undo, {
-    row <- selected_row()
-    rv$data[row, ] <- rv$original[row, ]
-    rv$changed <- setdiff(rv$changed, row)
-    rv$status <- if (length(rv$changed)) "저장되지 않은 변경" else ""
+    if (!length(rv$undo_stack)) {
+      rv$status <- "되돌릴 변경이 없습니다"
+      return()
+    }
+    snapshot <- rv$undo_stack[[length(rv$undo_stack)]]
+    rv$undo_stack[[length(rv$undo_stack)]] <- NULL
+    rv$data <- snapshot$data
+    rv$row_lines <- snapshot$row_lines
+    rv$dirty <- snapshot$dirty
+    set_add_mode(FALSE)
+    rv$status <- if (rv$dirty) "저장되지 않은 변경" else ""
+    refresh_controls(snapshot$selected)
   })
 
   observeEvent(input$reload, {
@@ -530,12 +776,112 @@ server <- function(input, output, session) {
     rv$status <- "변경 취소됨"
   })
 
+  observeEvent(input$series, {
+    req(rv$data, rv$series_catalog, input$series)
+    row <- selected_row()
+    target_index <- as.integer(input$series)
+    current_index <- series_index_for_row(row)
+    if (is.na(target_index) || identical(target_index, current_index)) return()
+
+    series <- rv$series_catalog
+    source_row <- series$representative_rows[target_index]
+    columns <- series$profile_columns
+    push_undo(row)
+
+    rv$row_lines[row] <- copy_csv_fields(
+      rv$row_lines[row], rv$row_lines[source_row], columns, rv$columns_on_disk
+    )
+    for (column in columns) rv$data[[column]][row] <- rv$data[[column]][source_row]
+    rv$data <- recalculate_row(rv$data, row)
+    update_row_line(row)
+    mark_changed("Series가 정정되었습니다")
+    refresh_controls(row)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$add_point, {
+    req(rv$data, input$series)
+    if (rv$add_mode) {
+      set_add_mode(FALSE)
+      rv$status <- if (rv$dirty) "저장되지 않은 변경" else ""
+    } else {
+      set_add_mode(TRUE, input$series)
+      rv$status <- "원본 그림에서 새 포인트의 중심을 클릭하세요"
+    }
+  })
+
+  observeEvent(input$delete_point, {
+    row <- selected_row()
+    if (nrow(rv$data) == 1L) {
+      rv$status <- "마지막 포인트는 삭제할 수 없습니다"
+      return()
+    }
+    showModal(modalDialog(
+      title = "포인트 삭제",
+      sprintf("선택한 포인트(%d번)를 삭제하시겠습니까?", row),
+      footer = tagList(
+        modalButton("취소"),
+        actionButton("confirm_delete", "삭제", class = "btn-danger")
+      ),
+      easyClose = TRUE
+    ))
+  })
+
+  observeEvent(input$confirm_delete, {
+    row <- selected_row()
+    req(nrow(rv$data) > 1L)
+    push_undo(row)
+    rv$data <- rv$data[-row, , drop = FALSE]
+    rv$row_lines <- rv$row_lines[-row]
+    mark_changed("포인트가 삭제되었습니다")
+    set_add_mode(FALSE)
+    removeModal()
+    refresh_controls(min(row, nrow(rv$data)))
+  })
+
   observeEvent(input$overview_click, {
     req(rv$data)
+    if (rv$add_mode) {
+      series <- rv$series_catalog
+      series_index <- rv$add_series
+      req(series_index >= 1L, series_index <= nrow(series$profiles))
+      source_row <- series$representative_rows[series_index]
+      x <- round(max(0, min(ncol(rv$image), input$overview_click$x)))
+      y <- round(max(0, min(nrow(rv$image), input$overview_click$y)))
+      marker_value <- series$marker_levels[series_index]
+      marker_rows <- if ("marker" %in% names(rv$data)) {
+        which(as.character(rv$data$marker) == marker_value)
+      } else {
+        seq_len(nrow(rv$data))
+      }
+      rows_before <- marker_rows[rv$data$pixel_x[marker_rows] <= x]
+      insert_at <- if (length(rows_before)) {
+        rows_before[which.max(rv$data$pixel_x[rows_before])] + 1L
+      } else {
+        min(marker_rows)
+      }
+
+      push_undo(selected_row())
+      new_row <- rv$data[source_row, , drop = FALSE]
+      new_row$pixel_x <- x
+      new_row$pixel_y <- y
+      new_line <- rv$row_lines[source_row]
+
+      before <- if (insert_at > 1L) seq_len(insert_at - 1L) else integer()
+      after <- if (insert_at <= nrow(rv$data)) insert_at:nrow(rv$data) else integer()
+      rv$data <- rbind(rv$data[before, , drop = FALSE], new_row, rv$data[after, , drop = FALSE])
+      rv$row_lines <- c(rv$row_lines[before], new_line, rv$row_lines[after])
+      rv$data <- recalculate_row(rv$data, insert_at)
+      update_row_line(insert_at)
+      mark_changed("새 포인트가 추가되었습니다")
+      set_add_mode(FALSE)
+      refresh_controls(insert_at)
+      return()
+    }
+
     distance <- (rv$data$pixel_x - input$overview_click$x)^2 +
       (rv$data$pixel_y - input$overview_click$y)^2
     row <- which.min(distance)
-    updateSelectInput(session, "point", selected = row)
+    select_point(row)
   })
 
   draw_image <- function(xlim = NULL, ylim = NULL) {
@@ -555,7 +901,8 @@ server <- function(input, output, session) {
     row <- selected_row()
     draw_image()
     points(rv$data$pixel_x, rv$data$pixel_y, pch = 3, col = "#777777", cex = 0.7, lwd = 1)
-    points(rv$data$pixel_x[row], rv$data$pixel_y[row], pch = 1, col = "#c23b22", cex = 1.5, lwd = 2)
+    selected_color <- if (rv$add_mode) "#2f5d50" else "#c23b22"
+    points(rv$data$pixel_x[row], rv$data$pixel_y[row], pch = 1, col = selected_color, cex = 1.5, lwd = 2)
   }, res = 110)
 
   output$zoom_plot <- renderPlot({
