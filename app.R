@@ -9,6 +9,7 @@ if (is.null(app_dir) && file.exists(file.path(getwd(), "tools/digitization-point
 if (is.null(app_dir)) app_dir <- normalizePath(getwd())
 repo_dir <- normalizePath(file.path(app_dir, "../.."))
 data_raw_dir <- file.path(repo_dir, "data-raw")
+source(file.path(data_raw_dir, "01_build-helpers.R"))
 
 number_pattern <- "[-+]?[0-9]*\\.?[0-9]+"
 
@@ -68,10 +69,55 @@ parse_calibration <- function(lines, columns) {
   }
   if (is.null(y$column) || (y$tilt != 0 && is.null(y$tilt_column))) return(NULL)
 
-  list(x = x, y = y, text = formula_text)
+  list(type = "formula", x = x, y = y, text = formula_text)
 }
 
-read_source_name <- function(lines) {
+parse_projective_calibration <- function(metadata, columns) {
+  box <- metadata$calibration_box
+  corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
+  if (is.null(box) || !all(corner_names %in% names(box))) return(NULL)
+  if (!all(c("pixel_x", "pixel_y") %in% columns)) return(NULL)
+
+  minimum_names <- grep("_(min|minimum)$", names(box), value = TRUE)
+  axes <- lapply(minimum_names, function(minimum_name) {
+    axis_name <- sub("_(min|minimum)$", "", minimum_name)
+    maximum_names <- c(
+      paste0(axis_name, "_max"),
+      paste0(axis_name, "_maximum")
+    )
+    maximum_name <- maximum_names[maximum_names %in% names(box)][1]
+    if (is.na(maximum_name)) return(NULL)
+
+    zero_threshold_name <- paste0(axis_name, "_zero_threshold")
+    list(
+      column = axis_name,
+      minimum = as.numeric(box[[minimum_name]]),
+      maximum = as.numeric(box[[maximum_name]]),
+      zero_threshold = if (zero_threshold_name %in% names(box)) {
+        as.numeric(box[[zero_threshold_name]])
+      } else {
+        NULL
+      }
+    )
+  })
+  axes <- Filter(Negate(is.null), axes)
+  if (length(axes) < 2) return(NULL)
+
+  list(
+    type = "projective",
+    x = axes[[1]],
+    y = axes[[2]],
+    box = box,
+    text = sprintf(
+      "projective: %s [%s, %s]; %s [%s, %s]",
+      axes[[1]]$column, axes[[1]]$minimum, axes[[1]]$maximum,
+      axes[[2]]$column, axes[[2]]$minimum, axes[[2]]$maximum
+    )
+  )
+}
+
+read_source_name <- function(lines, metadata) {
+  if (!is.null(metadata$source_figure)) return(as.character(metadata$source_figure))
   line <- grep("^# Source figure:", lines, value = TRUE)
   if (!length(line)) return(NULL)
   trimws(sub("^# Source figure: *", "", line[1]))
@@ -88,13 +134,16 @@ discover_datasets <- function(folder_path) {
 
   for (path in files) {
     lines <- readLines(path, warn = FALSE)
-    source_name <- read_source_name(lines)
+    metadata <- try(read_csv_metadata(path), silent = TRUE)
+    if (inherits(metadata, "try-error")) metadata <- list()
+    source_name <- read_source_name(lines, metadata)
     if (is.null(source_name)) next
 
     data <- try(read.csv(path, comment.char = "#", check.names = FALSE), silent = TRUE)
     if (inherits(data, "try-error") || !nrow(data)) next
 
-    calibration <- parse_calibration(lines, names(data))
+    calibration <- parse_projective_calibration(metadata, names(data))
+    if (is.null(calibration)) calibration <- parse_calibration(lines, names(data))
     source_path <- file.path(dirname(path), source_name)
     if (is.null(calibration) || !file.exists(source_path)) next
 
@@ -127,6 +176,37 @@ forward_y <- function(data, calibration) {
 inverse_y <- function(pixel_y, data, row, calibration) {
   tilt_value <- if (calibration$tilt == 0) 0 else calibration$tilt * data[[calibration$tilt_column]][row]
   max(0, (calibration$intercept + tilt_value - pixel_y) / calibration$scale)
+}
+
+projective_axis_values <- function(data, calibration) {
+  position <- project_pixels_to_unit(
+    data$pixel_x,
+    data$pixel_y,
+    calibration$box
+  )
+  x <- with(
+    calibration$x,
+    minimum + position$x_fraction * (maximum - minimum)
+  )
+  if (!is.null(calibration$x$zero_threshold)) {
+    x[abs(x) < calibration$x$zero_threshold] <- 0
+  }
+  x <- pmax(x, calibration$x$minimum)
+  y <- with(
+    calibration$y,
+    minimum + position$y_fraction * (maximum - minimum)
+  )
+  data.frame(x = x, y = y)
+}
+
+axis_values <- function(data, calibration) {
+  if (calibration$type == "projective") {
+    return(projective_axis_values(data, calibration))
+  }
+  data.frame(
+    x = data[[calibration$x$column]],
+    y = data[[calibration$y$column]]
+  )
 }
 
 sync_units <- function(data, row, changed_column) {
@@ -287,12 +367,11 @@ server <- function(input, output, session) {
   })
 
   point_labels <- function(data, calibration) {
-    x <- data[[calibration$x$column]]
-    y <- data[[calibration$y$column]]
+    values <- axis_values(data, calibration)
     marker <- if ("marker" %in% names(data)) data$marker else "point"
     temperature <- if ("test_temp_C" %in% names(data)) paste0(data$test_temp_C, " C") else ""
     sprintf("%02d | %s | %s | x=%s | y=%s", seq_len(nrow(data)), marker, temperature,
-            format(x, digits = 4), format(y, digits = 5))
+            format(values$x, digits = 4), format(values$y, digits = 5))
   }
 
   load_dataset <- function(key) {
@@ -303,10 +382,12 @@ server <- function(input, output, session) {
     columns_on_disk <- names(data)
     calibration <- dataset$calibration
 
-    calculated_pixel_x <- forward_x(data[[calibration$x$column]], calibration$x)
-    calculated_pixel_y <- forward_y(data, calibration$y)
-    data$pixel_x <- if ("pixel_x" %in% columns_on_disk) data$pixel_x else calculated_pixel_x
-    data$pixel_y <- if ("pixel_y" %in% columns_on_disk) data$pixel_y else calculated_pixel_y
+    if (calibration$type == "formula") {
+      calculated_pixel_x <- forward_x(data[[calibration$x$column]], calibration$x)
+      calculated_pixel_y <- forward_y(data, calibration$y)
+      data$pixel_x <- if ("pixel_x" %in% columns_on_disk) data$pixel_x else calculated_pixel_x
+      data$pixel_y <- if ("pixel_y" %in% columns_on_disk) data$pixel_y else calculated_pixel_y
+    }
 
     source_image <- png::readPNG(dataset$source_path)
     source_gray <- if (length(dim(source_image)) == 2) source_image else source_image[, , 1]
@@ -347,6 +428,7 @@ server <- function(input, output, session) {
 
   recalculate_row <- function(data, row) {
     calibration <- rv$dataset$calibration
+    if (calibration$type == "projective") return(data)
     x_column <- calibration$x$column
     y_column <- calibration$y$column
     data[[x_column]][row] <- inverse_x(data$pixel_x[row], calibration$x)
@@ -433,20 +515,29 @@ server <- function(input, output, session) {
     req(rv$data)
     row <- selected_row()
     calibration <- rv$dataset$calibration
+    values <- axis_values(rv$data, calibration)
     sprintf(
       "pixel_x: %.0f\npixel_y: %.0f\n%s: %s\n%s: %s",
       rv$data$pixel_x[row], rv$data$pixel_y[row],
-      calibration$x$column, format(rv$data[[calibration$x$column]][row], digits = 7),
-      calibration$y$column, format(rv$data[[calibration$y$column]][row], digits = 7)
+      calibration$x$column, format(values$x[row], digits = 7),
+      calibration$y$column, format(values$y[row], digits = 7)
     )
   })
 
   observeEvent(input$save, {
     req(rv$data, length(rv$changed) > 0)
     calibration <- rv$dataset$calibration
-    paired_columns <- c("YS_ksi", "YS_MPa", "UTS_ksi", "UTS_MPa",
-                        "strain_rate_min", "strain_rate_s", "test_temp_C", "test_temp_F")
-    columns <- unique(c("pixel_x", "pixel_y", calibration$x$column, calibration$y$column, paired_columns))
+    columns <- c("pixel_x", "pixel_y")
+    if (calibration$type == "formula") {
+      paired_columns <- c("YS_ksi", "YS_MPa", "UTS_ksi", "UTS_MPa",
+                          "strain_rate_min", "strain_rate_s", "test_temp_C", "test_temp_F")
+      columns <- unique(c(
+        columns,
+        calibration$x$column,
+        calibration$y$column,
+        paired_columns
+      ))
+    }
     columns <- intersect(columns, rv$columns_on_disk)
     header <- strsplit(rv$lines[rv$header_index], ",", fixed = TRUE)[[1]]
 

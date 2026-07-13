@@ -14,7 +14,38 @@ Rscript tools/digitization-point-editor/run.R
 
 ## PNG와 CSV의 매칭 기준
 
-앱은 파일명의 유사성으로 PNG와 CSV를 추측하지 않습니다. 먼저 `Folder (data-raw)`에서 작업 폴더를 선택하면, 해당 폴더 아래의 CSV를 재귀적으로 검색합니다. 각 CSV의 상단 주석에서 `# Source figure:`를 읽고 그 값으로 원본 PNG를 찾습니다.
+앱은 파일명의 유사성으로 PNG와 CSV를 추측하지 않습니다. 먼저 `Folder (data-raw)`에서 작업 폴더를 선택하면, 해당 폴더 아래의 CSV를 재귀적으로 검색합니다. 각 CSV의 YAML 주석에 있는 `source_figure`를 우선 읽고, 구형 CSV에서는 `# Source figure:`를 읽어 원본 PNG를 찾습니다.
+
+현재 권장 형식은 원본 픽셀 좌표와 네 축 기준점을 보관하는 다음 형식입니다.
+
+```text
+# ---
+# source_figure: 01_source_figure-1_yield_strength_vs_fluence.png
+# calibration_box:
+#   origin:
+#     pixel_x: 240
+#     pixel_y: 893
+#   x_axis_end:
+#     pixel_x: 1236
+#     pixel_y: 893
+#   xy_axis_end:
+#     pixel_x: 1236
+#     pixel_y: 97
+#   y_axis_end:
+#     pixel_x: 240
+#     pixel_y: 97
+#   fluence_min: 0
+#   fluence_max: 10
+#   YS_MPa_min: 0
+#   YS_MPa_max: 1100
+# ---
+source_figure,marker,test_temp_C,pixel_x,pixel_y
+Figure 1,circle,371,240,478
+```
+
+이 형식에서는 앱이 `calibration_box`를 이용해 현재 축값을 화면에 계산해서 보여주지만, 저장할 때는 `pixel_x`와 `pixel_y`만 수정합니다. 따라서 변환된 fluence나 물성값이 원본 디지타이징 CSV에 다시 기록되지 않습니다.
+
+다음과 같은 기존 선형 또는 로그 축 보정 주석도 계속 지원합니다.
 
 ```text
 # Source figure: 02_source_figure-1_yield_strength_vs_fluence.png
@@ -25,9 +56,10 @@ Rscript tools/digitization-point-editor/run.R
 
 Dataset 목록에 표시되려면 다음 조건을 모두 만족해야 합니다.
 
-- CSV에 `# Source figure:` 주석이 있어야 합니다.
+- CSV에 YAML `source_figure` 또는 `# Source figure:` 주석이 있어야 합니다.
 - 지정된 PNG 파일이 실제로 존재해야 합니다.
-- CSV에 앱이 해석할 수 있는 `# Axis calibration ...:` 주석이 있어야 합니다.
+- CSV에 네 점을 가진 YAML `calibration_box`가 있거나 앱이 해석할 수 있는 `# Axis calibration ...:` 주석이 있어야 합니다.
+- `calibration_box` 형식에서는 CSV 본문에 `pixel_x`와 `pixel_y`가 있어야 합니다.
 - CSV 본문에 한 행 이상의 데이터가 있어야 합니다.
 
 CSV 본문의 `source_figure` 컬럼은 데이터의 출처 표시에 사용될 뿐 PNG 매칭에는 사용되지 않습니다. 하나의 PNG에서 여러 물성값을 디지타이징한 경우, 여러 CSV가 같은 PNG 파일을 가리킬 수도 있습니다.
