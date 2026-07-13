@@ -231,6 +231,7 @@ format_csv_value <- function(value, column) {
 }
 
 split_csv_fields <- function(line) {
+  if (length(line) != 1L || is.na(line)) stop("유효하지 않은 CSV 행입니다.")
   characters <- strsplit(line, "", fixed = TRUE)[[1]]
   fields <- character()
   field <- character()
@@ -382,10 +383,30 @@ ui <- fluidPage(
       .series-actions .btn { width: 38px; height: 34px; padding: 5px; margin-bottom: 10px; border-radius: 4px; }
       .point-values { font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
       .plot-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+      .plot-stack { position: relative; height: calc(100vh - 82px); min-height: 420px; }
+      .plot-stack .shiny-plot-output { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+      #overview_image { z-index: 1; pointer-events: none; }
+      #overview { z-index: 2; background: transparent; }
       .btn-primary { background: #2f5d50; border-color: #2f5d50; }
       .btn-primary:hover { background: #24483e; border-color: #24483e; }
     ")),
     tags$script(HTML("
+      Shiny.addCustomMessageHandler('update-point-label', function(message) {
+        var element = document.getElementById('point');
+        if (!element || !element.selectize) return;
+        var value = String(message.value);
+        var option = element.selectize.options[value];
+        if (!option) return;
+        option = Object.assign({}, option, {value: value, text: message.label});
+        element.selectize.updateOption(value, option);
+        element.selectize.refreshItems();
+        element.selectize.$control.children('.item').each(function() {
+          if (String(this.getAttribute('data-value')) === value) {
+            this.textContent = message.label;
+          }
+        });
+      });
+
       document.addEventListener('keydown', function(event) {
         var tag = document.activeElement && document.activeElement.tagName;
         if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
@@ -449,7 +470,11 @@ ui <- fluidPage(
     column(
       width = 6,
       div(class = "plot-title", "Source image"),
-      plotOutput("overview", height = "calc(100vh - 82px)", click = "overview_click")
+      div(
+        class = "plot-stack",
+        plotOutput("overview_image", height = "100%"),
+        plotOutput("overview", height = "100%", click = "overview_click")
+      )
     ),
     column(
       width = 3,
@@ -545,8 +570,10 @@ server <- function(input, output, session) {
     update_catalog(folders()[[input$folder]])
   })
 
-  point_labels <- function(data, calibration) {
+  point_labels <- function(data, calibration, row_numbers = seq_len(nrow(data))) {
     values <- axis_values(data, calibration)
+    x_text <- vapply(values$x, format, character(1), digits = 4, trim = TRUE)
+    y_text <- vapply(values$y, format, character(1), digits = 5, trim = TRUE)
     marker <- if ("marker" %in% names(data)) data$marker else "point"
     temperature <- if ("test_temp_C" %in% names(data)) {
       paste0(data$test_temp_C, " C")
@@ -555,8 +582,20 @@ server <- function(input, output, session) {
     } else {
       ""
     }
-    sprintf("%02d | %s | %s | x=%s | y=%s", seq_len(nrow(data)), marker, temperature,
-            format(values$x, digits = 4), format(values$y, digits = 5))
+    sprintf("%02d | %s | %s | x=%s | y=%s", row_numbers, marker, temperature,
+            x_text, y_text)
+  }
+
+  update_point_label <- function(row) {
+    label <- point_labels(
+      rv$data[row, , drop = FALSE],
+      rv$dataset$calibration,
+      row_numbers = row
+    )
+    session$sendCustomMessage(
+      "update-point-label",
+      list(value = as.character(row), label = unname(label))
+    )
   }
 
   series_index_for_row <- function(row) {
@@ -604,12 +643,13 @@ server <- function(input, output, session) {
     )
   }
 
-  push_undo <- function(row) {
+  push_undo <- function(row, refresh_lists = FALSE) {
     rv$undo_stack[[length(rv$undo_stack) + 1L]] <- list(
       data = rv$data,
       row_lines = rv$row_lines,
       selected = row,
-      dirty = rv$dirty
+      dirty = rv$dirty,
+      refresh_lists = refresh_lists
     )
     if (length(rv$undo_stack) > 100L) rv$undo_stack <- tail(rv$undo_stack, 100L)
   }
@@ -746,7 +786,7 @@ server <- function(input, output, session) {
     rv$data <- recalculate_row(data, row)
     update_row_line(row)
     mark_changed()
-    refresh_controls(row)
+    update_point_label(row)
   }
 
   observeEvent(input$left, move_selected("left"))
@@ -767,7 +807,12 @@ server <- function(input, output, session) {
     rv$dirty <- snapshot$dirty
     set_add_mode(FALSE)
     rv$status <- if (rv$dirty) "저장되지 않은 변경" else ""
-    refresh_controls(snapshot$selected)
+    if (snapshot$refresh_lists) {
+      refresh_controls(snapshot$selected)
+    } else {
+      select_point(snapshot$selected)
+      update_point_label(snapshot$selected)
+    }
   })
 
   observeEvent(input$reload, {
@@ -781,12 +826,14 @@ server <- function(input, output, session) {
     row <- selected_row()
     target_index <- as.integer(input$series)
     current_index <- series_index_for_row(row)
-    if (is.na(target_index) || identical(target_index, current_index)) return()
+    if (is.na(target_index) || target_index < 1L ||
+        target_index > length(rv$series_catalog$representative_rows) ||
+        identical(target_index, current_index)) return()
 
     series <- rv$series_catalog
     source_row <- series$representative_rows[target_index]
     columns <- series$profile_columns
-    push_undo(row)
+    push_undo(row, refresh_lists = TRUE)
 
     rv$row_lines[row] <- copy_csv_fields(
       rv$row_lines[row], rv$row_lines[source_row], columns, rv$columns_on_disk
@@ -829,7 +876,7 @@ server <- function(input, output, session) {
   observeEvent(input$confirm_delete, {
     row <- selected_row()
     req(nrow(rv$data) > 1L)
-    push_undo(row)
+    push_undo(row, refresh_lists = TRUE)
     rv$data <- rv$data[-row, , drop = FALSE]
     rv$row_lines <- rv$row_lines[-row]
     mark_changed("포인트가 삭제되었습니다")
@@ -860,7 +907,7 @@ server <- function(input, output, session) {
         min(marker_rows)
       }
 
-      push_undo(selected_row())
+      push_undo(selected_row(), refresh_lists = TRUE)
       new_row <- rv$data[source_row, , drop = FALSE]
       new_row$pixel_x <- x
       new_row$pixel_y <- y
@@ -884,26 +931,33 @@ server <- function(input, output, session) {
     select_point(row)
   })
 
-  draw_image <- function(xlim = NULL, ylim = NULL) {
+  draw_plot_window <- function(xlim = NULL, ylim = NULL, background = "white") {
     width <- ncol(rv$image)
     height <- nrow(rv$image)
     if (is.null(xlim)) xlim <- c(0, width)
     if (is.null(ylim)) ylim <- c(height, 0)
 
-    par(mar = c(0, 0, 0, 0), bg = "white")
+    par(mar = c(0, 0, 0, 0), bg = background)
     plot.new()
     plot.window(xlim, ylim, xaxs = "i", yaxs = "i", asp = 1)
-    rasterImage(rv$raster, 0, height, width, 0)
   }
+
+  output$overview_image <- renderPlot({
+    req(rv$image, rv$raster)
+    width <- ncol(rv$image)
+    height <- nrow(rv$image)
+    draw_plot_window()
+    rasterImage(rv$raster, 0, height, width, 0)
+  }, res = 110)
 
   output$overview <- renderPlot({
     req(rv$data, rv$image)
     row <- selected_row()
-    draw_image()
+    draw_plot_window(background = NA)
     points(rv$data$pixel_x, rv$data$pixel_y, pch = 3, col = "#777777", cex = 0.7, lwd = 1)
     selected_color <- if (rv$add_mode) "#2f5d50" else "#c23b22"
     points(rv$data$pixel_x[row], rv$data$pixel_y[row], pch = 1, col = selected_color, cex = 1.5, lwd = 2)
-  }, res = 110)
+  }, res = 110, bg = "transparent")
 
   output$zoom_plot <- renderPlot({
     req(rv$data, rv$image)
@@ -911,8 +965,27 @@ server <- function(input, output, session) {
     radius <- as.numeric(input$zoom)
     x <- rv$data$pixel_x[row]
     y <- rv$data$pixel_y[row]
-    draw_image(c(x - radius, x + radius), c(y + radius, y - radius))
-    points(rv$data$pixel_x, rv$data$pixel_y, pch = 3, col = "#777777", cex = 1.1, lwd = 1)
+    xlim <- c(x - radius, x + radius)
+    ylim <- c(y + radius, y - radius)
+    draw_plot_window(xlim, ylim)
+
+    width <- ncol(rv$image)
+    height <- nrow(rv$image)
+    x_left <- max(0L, floor(xlim[1]))
+    x_right <- min(width, ceiling(xlim[2]))
+    y_top <- max(0L, floor(ylim[2]))
+    y_bottom <- min(height, ceiling(ylim[1]))
+    crop <- rv$raster[
+      (y_top + 1L):y_bottom,
+      (x_left + 1L):x_right,
+      drop = FALSE
+    ]
+    rasterImage(crop, x_left, y_bottom, x_right, y_top)
+
+    nearby <- rv$data$pixel_x >= xlim[1] & rv$data$pixel_x <= xlim[2] &
+      rv$data$pixel_y >= ylim[2] & rv$data$pixel_y <= ylim[1]
+    points(rv$data$pixel_x[nearby], rv$data$pixel_y[nearby],
+           pch = 3, col = "#777777", cex = 1.1, lwd = 1)
     points(x, y, pch = 1, col = "#c23b22", cex = 2.2, lwd = 2)
   }, res = 130)
 
