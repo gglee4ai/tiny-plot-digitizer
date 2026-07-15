@@ -801,6 +801,38 @@ build_series_catalog <- function(data, calibration) {
   )
 }
 
+is_digitizing_project_file <- function(path, source_path) {
+  if (!file.exists(path)) return(FALSE)
+  metadata <- try(read_csv_metadata(path), silent = TRUE)
+  if (inherits(metadata, "try-error") || is.null(metadata$source_image)) return(FALSE)
+  if (!identical(basename(as.character(metadata$source_image)), basename(source_path))) {
+    return(FALSE)
+  }
+  columns <- try(
+    names(read.csv(path, comment.char = "#", check.names = FALSE, nrows = 1)),
+    silent = TRUE
+  )
+  if (inherits(columns, "try-error")) return(FALSE)
+  all(c("pixel_x", "pixel_y") %in% columns) &&
+    any(c("group_id", "series_id") %in% columns) &&
+    !is.null(metadata$calibration_box) && !is.null(metadata$calibration_axes)
+}
+
+latest_project_file <- function(source_path) {
+  source_stem <- tools::file_path_sans_ext(basename(source_path))
+  candidates <- list.files(
+    dirname(source_path), pattern = "\\.csv$", full.names = TRUE,
+    ignore.case = TRUE
+  )
+  candidate_stems <- tools::file_path_sans_ext(basename(candidates))
+  candidates <- candidates[startsWith(candidate_stems, source_stem)]
+  candidates <- candidates[vapply(
+    candidates, is_digitizing_project_file, logical(1), source_path = source_path
+  )]
+  if (!length(candidates)) return(NULL)
+  candidates[which.max(file.info(candidates)$mtime)]
+}
+
 discover_images <- function(folder_path) {
   files <- list.files(
     folder_path, pattern = "\\.png$", recursive = TRUE,
@@ -808,10 +840,9 @@ discover_images <- function(folder_path) {
   )
   images <- lapply(files, function(path) {
     normalized <- normalizePath(path)
-    project_name <- paste0(tools::file_path_sans_ext(basename(path)), "_digitized.csv")
     list(
       source_path = normalized,
-      path = file.path(dirname(normalized), project_name),
+      load_path = latest_project_file(normalized),
       label = substring(normalized, nchar(normalizePath(folder_path)) + 2)
     )
   })
@@ -949,6 +980,8 @@ ui <- fluidPage(
       .move-button-row .btn { width: 100%; height: 36px; padding: 3px; font-size: 18px; border-radius: 4px; }
       .status-line { min-height: 22px; margin-top: 8px; font-size: 12px; }
       .status-line, .point-values, .status-line .shiny-text-output, .point-values .shiny-text-output { max-width: 100%; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+      .save-name-options .form-group { margin: 8px 0 5px; }
+      .save-name-options .control-label { font-weight: 600; }
       .point-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
       .compact-control-row { display: grid; gap: 5px; align-items: center; margin-bottom: 9px; }
       .compact-control-row > *, .compact-control-row .shiny-input-container { min-width: 0; }
@@ -979,16 +1012,15 @@ ui <- fluidPage(
       .group-style-pair-row input, .group-style-pair-row select { width: 100%; height: 34px; min-width: 0; padding: 4px 6px; }
       .symbol-swatch-frame { width: 34px; height: 34px; box-sizing: border-box; border: 1px solid #aaa; border-radius: 4px; overflow: hidden; background: white; }
       .symbol-swatch-frame .shiny-plot-output { width: 100% !important; height: 100% !important; }
-      .calibration-axis-name-row { display: grid; grid-template-columns: auto 117px auto 117px; gap: 2px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+      .calibration-axis-name-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; margin-bottom: 8px; }
       .calibration-axis-name-row > *, .calibration-axis-name-row .form-group { min-width: 0; }
-      .calibration-axis-name-row > span:nth-child(3) { margin-left: 8px; }
       .calibration-axis-name-row .form-group { width: 100%; margin: 0; }
       .calibration-axis-name-row input { width: 100%; min-width: 0; height: 28px; padding: 3px 6px; }
       .calibration-setting-title { margin: 8px 0 5px; font-weight: 600; }
       .calibration-setting-table { margin-bottom: 9px; }
       .calibration-setting-row { display: grid; align-items: center; min-height: 31px; gap: 5px; }
       .box-setting-row { grid-template-columns: minmax(82px, 1fr) auto 75px auto 75px; }
-      .axis-setting-row { grid-template-columns: 40px 24px minmax(62px, 1fr) 11px minmax(62px, 1fr); gap: 5px; }
+      .axis-setting-row { grid-template-columns: minmax(40px, 1fr) auto 75px auto 75px; gap: 5px; }
       .calibration-setting-radio, .calibration-setting-radio label { margin: 0; font-weight: 400; }
       .calibration-setting-radio input { margin-top: 2px; }
       .calibration-coordinate { font-family: Menlo, Consolas, monospace; font-size: 11px; white-space: nowrap; }
@@ -1226,9 +1258,11 @@ ui <- fluidPage(
               ),
               div(
                 class = "point-action-row",
-                actionButton("add_point", "입력",
+                actionButton("add_point", "연속 입력",
                              title = "선택한 그룹에 포인트 연속 입력 시작"),
-                actionButton("delete_point", "제거", title = "선택한 포인트 삭제")
+                actionButton(
+                  "delete_point", "현재포인트 제거", title = "선택한 포인트 제거"
+                )
               ),
               div(
                 class = "point-nav",
@@ -1411,6 +1445,14 @@ ui <- fluidPage(
         ),
         div(class = "point-values", textOutput("point_values")),
         div(
+          class = "save-name-options",
+          radioButtons(
+            "save_name_mode", "저장 파일명",
+            choices = c("동일파일명.csv" = "same", "*-digitized.csv" = "digitized"),
+            selected = "same", inline = TRUE, width = "100%"
+          )
+        ),
+        div(
           class = "save-actions",
           actionButton("save", "변경 저장", class = "btn-primary"),
           actionButton("reload", "변경 취소")
@@ -1457,8 +1499,47 @@ server <- function(input, output, session) {
     updating_edit_mode = FALSE
   )
 
+  save_path_for_dataset <- function(dataset) {
+    if (is.null(dataset) || is.null(dataset$source_path)) return(NULL)
+    mode <- if (length(input$save_name_mode)) input$save_name_mode else "same"
+    source_stem <- tools::file_path_sans_ext(dataset$source_path)
+    if (identical(mode, "same")) return(paste0(source_stem, ".csv"))
+    paste0(source_stem, "-digitized.csv")
+  }
+
+  relative_repo_path <- function(path) {
+    normalized <- normalizePath(path, mustWork = FALSE)
+    prefix <- paste0(normalizePath(repo_dir), .Platform$file.sep)
+    if (startsWith(normalized, prefix)) {
+      return(substring(normalized, nchar(prefix) + 1L))
+    }
+    normalized
+  }
+
+  update_save_name_inputs <- function(dataset) {
+    project_path <- dataset$load_path
+    mode <- "same"
+    if (!is.null(project_path)) {
+      source_stem <- tools::file_path_sans_ext(basename(dataset$source_path))
+      project_stem <- tools::file_path_sans_ext(basename(project_path))
+      loaded_postfix <- substring(project_stem, nchar(source_stem) + 1L)
+      if (nzchar(loaded_postfix)) mode <- "digitized"
+    }
+    freezeReactiveValue(input, "save_name_mode")
+    updateRadioButtons(session, "save_name_mode", selected = mode)
+    invisible()
+  }
+
   save_changes <- function(auto = FALSE) {
     if (is.null(rv$data) || is.null(rv$dataset) || !rv$dirty) return(NULL)
+    save_path <- tryCatch(
+      save_path_for_dataset(rv$dataset),
+      error = function(error) {
+        rv$status <- conditionMessage(error)
+        NULL
+      }
+    )
+    if (is.null(save_path)) return(NULL)
     finalize_point_order()
 
     metadata <- c(
@@ -1483,9 +1564,16 @@ server <- function(input, output, session) {
     )
     writeLines(
       c("# ---", paste0("# ", yaml_lines), "# ---", csv_lines),
-      rv$dataset$path,
+      save_path,
       useBytes = TRUE
     )
+    rv$dataset$load_path <- save_path
+    current_catalog <- catalog()
+    dataset_key <- rv$dataset$source_path
+    if (dataset_key %in% names(current_catalog)) {
+      current_catalog[[dataset_key]]$load_path <- save_path
+      catalog(current_catalog)
+    }
     rv$dirty <- FALSE
     rv$calibration_dirty <- FALSE
     rv$point_baseline_data <- rv$data
@@ -1495,7 +1583,7 @@ server <- function(input, output, session) {
     rv$calibration_undo <- NULL
 
     prefix <- if (auto) "자동 저장됨:" else "저장됨:"
-    message <- paste(prefix, basename(rv$dataset$path))
+    message <- paste(prefix, relative_repo_path(save_path))
     if (auto) {
       rv$pending_switch_status <- message
     } else {
@@ -1759,7 +1847,7 @@ server <- function(input, output, session) {
     rv$add_series <- if (active) as.integer(series) else NULL
     updateActionButton(
       session, "add_point",
-      label = if (active) "입력 완료" else "입력",
+      label = if (active) "입력 완료" else "연속 입력",
       icon = NULL
     )
     session$sendCustomMessage("set-add-mode-state", list(active = isTRUE(active)))
@@ -1903,10 +1991,11 @@ server <- function(input, output, session) {
     series <- default_groups()
     data <- empty_points()
     loaded_project <- FALSE
+    project_path <- dataset$load_path
 
-    if (file.exists(dataset$path)) {
-      metadata <- read_csv_metadata(dataset$path)
-      saved_data <- read.csv(dataset$path, comment.char = "#", check.names = FALSE)
+    if (!is.null(project_path) && file.exists(project_path)) {
+      metadata <- read_csv_metadata(project_path)
+      saved_data <- read.csv(project_path, comment.char = "#", check.names = FALSE)
       group_id_column <- if ("group_id" %in% names(saved_data)) {
         "group_id"
       } else {
@@ -1914,11 +2003,11 @@ server <- function(input, output, session) {
       }
       required <- c(group_id_column, "pixel_x", "pixel_y")
       if (!all(required %in% names(saved_data))) {
-        stop("독립 프로젝트 형식이 아닌 CSV입니다: ", dataset$path)
+        stop("독립 프로젝트 형식이 아닌 CSV입니다: ", project_path)
       }
       saved_calibration <- parse_projective_calibration(metadata, names(saved_data))
       if (is.null(saved_calibration)) {
-        stop("축 설정을 읽을 수 없습니다: ", dataset$path)
+        stop("축 설정을 읽을 수 없습니다: ", project_path)
       }
       group_metadata <- if (!is.null(metadata$groups)) metadata$groups else metadata$series
       saved_series <- series_from_metadata(group_metadata)
@@ -1967,9 +2056,10 @@ server <- function(input, output, session) {
     rv$calibration_target <- NULL
     rv$calibration_point <- NULL
     set_add_mode(FALSE)
+    update_save_name_inputs(dataset)
     rv$status <- if (is.null(rv$pending_switch_status)) {
       if (loaded_project) {
-        paste("프로젝트 불러옴:", basename(dataset$path))
+        paste("프로젝트 불러옴:", basename(project_path))
       } else {
         "새 디지타이징 프로젝트"
       }
@@ -2558,22 +2648,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$delete_point, {
     if (is.null(rv$selected) || !nrow(rv$data)) {
-      rv$status <- "삭제할 포인트를 선택하세요"
+      rv$status <- "제거할 포인트를 선택하세요"
       return()
     }
-    row <- selected_row()
-    showModal(modalDialog(
-      title = "포인트 삭제",
-      sprintf("선택한 포인트(%d번)를 삭제하시겠습니까?", rv$data$point_id[row]),
-      footer = tagList(
-        modalButton("취소"),
-        actionButton("confirm_delete", "삭제", class = "btn-danger")
-      ),
-      easyClose = TRUE
-    ))
-  }, ignoreInit = TRUE)
-
-  observeEvent(input$confirm_delete, {
     row <- selected_row()
     rv$point_undo <- NULL
     rv$data <- rv$data[-row, , drop = FALSE]
@@ -2583,11 +2660,10 @@ server <- function(input, output, session) {
       NULL
     }
     sort_points(next_point_id)
-    mark_changed("포인트가 삭제되었습니다")
+    mark_changed("포인트가 제거되었습니다")
     set_add_mode(FALSE)
-    removeModal()
     refresh_controls(rv$selected)
-  })
+  }, ignoreInit = TRUE)
 
   observeEvent(input$overview_click, {
     req(rv$data)
