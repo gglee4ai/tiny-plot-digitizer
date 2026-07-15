@@ -611,6 +611,27 @@ calibration_to_metadata <- function(calibration) {
   )
 }
 
+atomic_write_lines <- function(lines, path) {
+  target_dir <- normalizePath(dirname(path), mustWork = TRUE)
+  target_path <- file.path(target_dir, basename(path))
+  temp_path <- tempfile(
+    pattern = paste0(".", basename(path), "-"),
+    tmpdir = target_dir,
+    fileext = ".tmp"
+  )
+  on.exit(unlink(temp_path), add = TRUE)
+
+  connection <- file(temp_path, open = "wb")
+  tryCatch(
+    writeLines(lines, connection, useBytes = TRUE),
+    finally = close(connection)
+  )
+  if (!file.rename(temp_path, target_path)) {
+    stop("임시 파일을 최종 CSV로 교체하지 못했습니다: ", target_path)
+  }
+  invisible(target_path)
+}
+
 box_point_display_labels <- c(
   origin = "원점", x_axis_end = "X 끝점",
   y_axis_end = "Y 끝점", xy_axis_end = "XY 끝점"
@@ -1365,11 +1386,21 @@ server <- function(input, output, session) {
     csv_lines <- capture.output(
       utils::write.csv(body, row.names = FALSE, na = "")
     )
-    writeLines(
-      c("# ---", paste0("# ", yaml_lines), "# ---", csv_lines),
-      save_path,
-      useBytes = TRUE
+    saved <- tryCatch(
+      {
+        atomic_write_lines(
+          c("# ---", paste0("# ", yaml_lines), "# ---", csv_lines),
+          save_path
+        )
+        TRUE
+      },
+      error = function(error) {
+        rv$pending_switch_status <- NULL
+        rv$status <- paste0("저장 실패: ", conditionMessage(error))
+        FALSE
+      }
     )
+    if (!saved) return(NULL)
     rv$dataset$load_path <- save_path
     current_catalog <- catalog()
     dataset_key <- rv$dataset$source_path
@@ -1387,6 +1418,11 @@ server <- function(input, output, session) {
       rv$status <- message
     }
     message
+  }
+
+  save_before_navigation <- function() {
+    if (!unsaved_changes_pending()) return(TRUE)
+    !is.null(save_changes(auto = TRUE))
   }
 
   clear_dataset <- function() {
@@ -1488,7 +1524,10 @@ server <- function(input, output, session) {
       update_folder_picker_target(folder_path)
       return()
     }
-    save_changes(auto = TRUE)
+    if (!save_before_navigation()) {
+      update_folder_picker_target(selected_folder())
+      return()
+    }
     selected_folder(folder_path)
     update_folder_picker_target(folder_path)
     update_catalog(folder_path)
@@ -1859,7 +1898,15 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$dataset, {
-    save_changes(auto = TRUE)
+    if (!save_before_navigation()) {
+      if (!is.null(rv$dataset)) {
+        freezeReactiveValue(input, "dataset")
+        updateSelectInput(
+          session, "dataset", selected = rv$dataset$source_path
+        )
+      }
+      return()
+    }
     load_dataset(input$dataset)
   })
 
