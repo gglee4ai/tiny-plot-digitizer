@@ -1259,7 +1259,8 @@ server <- function(input, output, session) {
   folder_roots <- c("홈" = home_dir)
   catalog <- reactiveVal(list())
   rv <- reactiveValues(
-    data = NULL, image = NULL, raster = NULL, dataset = NULL,
+    data = NULL, image_width = NULL, image_height = NULL,
+    raster_matrix = NULL, dataset = NULL,
     calibration = NULL,
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
@@ -1427,8 +1428,9 @@ server <- function(input, output, session) {
 
   clear_dataset <- function() {
     rv$data <- NULL
-    rv$image <- NULL
-    rv$raster <- NULL
+    rv$image_width <- NULL
+    rv$image_height <- NULL
+    rv$raster_matrix <- NULL
     rv$dataset <- NULL
     rv$calibration <- NULL
     rv$point_baseline_data <- NULL
@@ -1693,12 +1695,12 @@ server <- function(input, output, session) {
       updateNumericInput(
         session, paste0("box_", box_point, "_x"),
         value = round_pixel_coordinate(point$pixel_x),
-        min = 0, max = ncol(rv$image), step = 0.5
+        min = 0, max = rv$image_width, step = 0.5
       )
       updateNumericInput(
         session, paste0("box_", box_point, "_y"),
         value = round_pixel_coordinate(point$pixel_y),
-        min = 0, max = nrow(rv$image), step = 0.5
+        min = 0, max = rv$image_height, step = 0.5
       )
     }
     updateTextInput(session, "x_axis_name", value = calibration$x$column)
@@ -1822,9 +1824,10 @@ server <- function(input, output, session) {
     req(key, key %in% names(catalog()))
     dataset <- catalog()[[key]]
     source_image <- png::readPNG(dataset$source_path)
-    source_gray <- if (length(dim(source_image)) == 2) source_image else source_image[, , 1]
+    image_height <- dim(source_image)[1]
+    image_width <- dim(source_image)[2]
 
-    calibration <- new_project_calibration(ncol(source_gray), nrow(source_gray))
+    calibration <- new_project_calibration(image_width, image_height)
     series <- default_groups()
     data <- empty_points()
     loaded_project <- FALSE
@@ -1870,8 +1873,9 @@ server <- function(input, output, session) {
     }
 
     rv$data <- data
-    rv$image <- source_gray
-    rv$raster <- as.raster(source_image)
+    rv$image_width <- image_width
+    rv$image_height <- image_height
+    rv$raster_matrix <- as.matrix(as.raster(source_image))
     rv$dataset <- dataset
     rv$calibration <- calibration
     rv$series <- series
@@ -2212,8 +2216,8 @@ server <- function(input, output, session) {
     row <- selected_row()
     remember_point_change(row)
     data <- rv$data
-    width <- ncol(rv$image)
-    height <- nrow(rv$image)
+    width <- rv$image_width
+    height <- rv$image_height
     step <- as.numeric(input$move_step)
 
     if (direction == "left") data$pixel_x[row] <- max(0, data$pixel_x[row] - step)
@@ -2239,13 +2243,13 @@ server <- function(input, output, session) {
     req(calibration$type == "projective", box_point %in% names(calibration$box))
     pixel_x <- round_pixel_coordinate(pixel_x)
     pixel_y <- round_pixel_coordinate(pixel_y)
-    if (!is.finite(pixel_x) || pixel_x < 0 || pixel_x > ncol(rv$image)) {
-      rv$status <- sprintf("박스 x 좌표는 0~%d 범위 안에 있어야 합니다", ncol(rv$image))
+    if (!is.finite(pixel_x) || pixel_x < 0 || pixel_x > rv$image_width) {
+      rv$status <- sprintf("박스 x 좌표는 0~%d 범위 안에 있어야 합니다", rv$image_width)
       update_calibration_inputs()
       return(FALSE)
     }
-    if (!is.finite(pixel_y) || pixel_y < 0 || pixel_y > nrow(rv$image)) {
-      rv$status <- sprintf("박스 y 좌표는 0~%d 범위 안에 있어야 합니다", nrow(rv$image))
+    if (!is.finite(pixel_y) || pixel_y < 0 || pixel_y > rv$image_height) {
+      rv$status <- sprintf("박스 y 좌표는 0~%d 범위 안에 있어야 합니다", rv$image_height)
       update_calibration_inputs()
       return(FALSE)
     }
@@ -2342,9 +2346,9 @@ server <- function(input, output, session) {
     pixel_x <- as.numeric(point$pixel_x)
     pixel_y <- as.numeric(point$pixel_y)
     if (direction == "left") pixel_x <- max(0, pixel_x - step)
-    if (direction == "right") pixel_x <- min(ncol(rv$image), pixel_x + step)
+    if (direction == "right") pixel_x <- min(rv$image_width, pixel_x + step)
     if (direction == "up") pixel_y <- max(0, pixel_y - step)
-    if (direction == "down") pixel_y <- min(nrow(rv$image), pixel_y + step)
+    if (direction == "down") pixel_y <- min(rv$image_height, pixel_y + step)
     set_calibration_box_point(rv$calibration_point, pixel_x, pixel_y)
   }
 
@@ -2484,8 +2488,8 @@ server <- function(input, output, session) {
     req(rv$data)
     if (active_mode_is("calibration")) {
       req(rv$calibration$type == "projective")
-      x <- round_pixel_coordinate(max(0, min(ncol(rv$image), input$overview_click$x)))
-      y <- round_pixel_coordinate(max(0, min(nrow(rv$image), input$overview_click$y)))
+      x <- round_pixel_coordinate(max(0, min(rv$image_width, input$overview_click$x)))
+      y <- round_pixel_coordinate(max(0, min(rv$image_height, input$overview_click$y)))
       if (identical(rv$calibration_target, "axis")) {
         req(rv$calibration_point)
         fraction <- project_to_axis_edge(x, y, axis_edge(rv$calibration, rv$calibration_point))
@@ -2500,8 +2504,8 @@ server <- function(input, output, session) {
     if (rv$add_mode) {
       series_id <- as.integer(rv$add_series)
       req(!is.na(series_row(series_id)))
-      x <- round_pixel_coordinate(max(0, min(ncol(rv$image), input$overview_click$x)))
-      y <- round_pixel_coordinate(max(0, min(nrow(rv$image), input$overview_click$y)))
+      x <- round_pixel_coordinate(max(0, min(rv$image_width, input$overview_click$x)))
+      y <- round_pixel_coordinate(max(0, min(rv$image_height, input$overview_click$y)))
       rv$point_undo <- NULL
       point_id <- if (nrow(rv$data)) max(rv$data$point_id) + 1L else 1L
       new_row <- data.frame(
@@ -2528,8 +2532,8 @@ server <- function(input, output, session) {
   })
 
   draw_plot_window <- function(xlim = NULL, ylim = NULL, background = "white") {
-    width <- ncol(rv$image)
-    height <- nrow(rv$image)
+    width <- rv$image_width
+    height <- rv$image_height
     if (is.null(xlim)) xlim <- c(0, width)
     if (is.null(ylim)) ylim <- c(height, 0)
 
@@ -2566,15 +2570,15 @@ server <- function(input, output, session) {
   }
 
   output$overview_image <- renderPlot({
-    req(rv$image, rv$raster)
-    width <- ncol(rv$image)
-    height <- nrow(rv$image)
+    req(rv$image_width, rv$image_height, rv$raster_matrix)
+    width <- rv$image_width
+    height <- rv$image_height
     draw_plot_window()
-    rasterImage(rv$raster, 0, height, width, 0)
+    rasterImage(rv$raster_matrix, 0, height, width, 0)
   }, res = 110)
 
   output$overview <- renderPlot({
-    req(rv$data, rv$image)
+    req(rv$data, rv$image_width, rv$image_height)
     draw_plot_window(background = NA)
     selected_box_point <- if (
       active_mode_is("calibration") && identical(rv$calibration_target, "box")
@@ -2593,7 +2597,7 @@ server <- function(input, output, session) {
   }, res = 110, bg = "transparent")
 
   selected_target <- reactive({
-    req(rv$data, rv$image)
+    req(rv$data, rv$image_width, rv$image_height)
     if (active_mode_is("calibration")) {
       req(rv$calibration$type == "projective")
       if (identical(rv$calibration_target, "axis")) {
@@ -2610,7 +2614,7 @@ server <- function(input, output, session) {
   })
 
   output$zoom_plot <- renderPlot({
-    req(rv$data, rv$image)
+    req(rv$data, rv$image_width, rv$image_height, rv$raster_matrix)
     radius <- as.numeric(input$zoom)
     target <- selected_target()
     x <- target[["pixel_x"]]
@@ -2619,13 +2623,13 @@ server <- function(input, output, session) {
     ylim <- c(y + radius, y - radius)
     draw_plot_window(xlim, ylim)
 
-    width <- ncol(rv$image)
-    height <- nrow(rv$image)
+    width <- rv$image_width
+    height <- rv$image_height
     x_left <- max(0L, floor(xlim[1]))
     x_right <- min(width, ceiling(xlim[2]))
     y_top <- max(0L, floor(ylim[2]))
     y_bottom <- min(height, ceiling(ylim[1]))
-    crop <- rv$raster[
+    crop <- rv$raster_matrix[
       (y_top + 1L):y_bottom,
       (x_left + 1L):x_right,
       drop = FALSE
