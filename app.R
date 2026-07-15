@@ -835,7 +835,7 @@ latest_project_file <- function(source_path) {
 
 discover_images <- function(folder_path) {
   files <- list.files(
-    folder_path, pattern = "\\.png$", recursive = TRUE,
+    folder_path, pattern = "\\.png$", recursive = FALSE,
     full.names = TRUE, ignore.case = TRUE
   )
   images <- lapply(files, function(path) {
@@ -917,6 +917,20 @@ default_groups <- function() {
   )
 }
 
+series_for_save <- function(series, data) {
+  used_ids <- if (nrow(data)) unique(as.integer(data$series_id)) else integer()
+  series[series$id %in% used_ids, , drop = FALSE]
+}
+
+restore_default_groups <- function(series) {
+  defaults <- default_groups()
+  missing_defaults <- defaults[!defaults$id %in% series$id, , drop = FALSE]
+  series <- rbind(series, missing_defaults)
+  series <- series[order(series$id), , drop = FALSE]
+  rownames(series) <- NULL
+  series
+}
+
 series_from_metadata <- function(value) {
   if (is.null(value) || !length(value)) return(empty_series())
   rows <- lapply(value, function(item) {
@@ -975,6 +989,11 @@ ui <- fluidPage(
       .editor-layout > .detail-column { padding-right: 0; }
       .control-panel { border-right: 1px solid #d8d8d4; padding-right: 18px; min-height: calc(100vh - 48px); }
       .form-group { margin-bottom: 10px; }
+      .folder-select-button { width: 100%; margin-bottom: 5px; }
+      .selected-folder-line { min-height: 20px; margin-bottom: 8px; font-size: 12px; overflow-wrap: anywhere; }
+      #folder-modal .sF-breadcrumps { display: none; }
+      #folder-modal .folder-picker-breadcrumb { display: flex; align-items: center; gap: 5px; margin: 7px 0 2px; padding: 5px 8px; min-height: 30px; overflow-x: auto; white-space: nowrap; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 12px; }
+      #folder-modal .folder-picker-separator { color: #777; }
       .move-button-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 6px 0 9px; }
       .calibration-move-button-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
       .move-button-row .btn { width: 100%; height: 36px; padding: 3px; font-size: 18px; border-radius: 4px; }
@@ -1231,6 +1250,93 @@ ui <- fluidPage(
         radio.checked = true;
         Shiny.setInputValue(radio.name, radio.value, {priority: 'event'});
       });
+
+      var folderPickerTarget = null;
+
+      function renderFolderPickerPath() {
+        var modal = document.getElementById('folder-modal');
+        if (!modal || !folderPickerTarget) return;
+        var modalBody = modal.querySelector('.modal-body');
+        var modalControl = modal.querySelector('.sF-navigation');
+        if (!modalBody || !modalControl) return;
+        var breadcrumb = modal.querySelector('.folder-picker-breadcrumb');
+        if (!breadcrumb) {
+          breadcrumb = document.createElement('div');
+          breadcrumb.className = 'folder-picker-breadcrumb';
+          modalControl.insertAdjacentElement('afterend', breadcrumb);
+        }
+        var pathKey = JSON.stringify(folderPickerTarget);
+        if (breadcrumb.dataset.pathKey === pathKey) return;
+        breadcrumb.dataset.pathKey = pathKey;
+        breadcrumb.replaceChildren();
+        ['홈'].concat(folderPickerTarget.components || []).forEach(function(name, index, path) {
+          var folder = document.createElement('span');
+          folder.className = 'folder-picker-component';
+          folder.textContent = name;
+          breadcrumb.appendChild(folder);
+          if (index < path.length - 1) {
+            var separator = document.createElement('span');
+            separator.className = 'folder-picker-separator';
+            separator.textContent = '›';
+            breadcrumb.appendChild(separator);
+          }
+        });
+        breadcrumb.scrollLeft = breadcrumb.scrollWidth;
+      }
+
+      function initializeFolderPickerPath() {
+        var modal = document.getElementById('folder-modal');
+        if (!modal || !folderPickerTarget) return;
+        renderFolderPickerPath();
+        var root = modal.querySelector('.sF-dirList > .sF-directory');
+        if (!root) return;
+        var targetKey = JSON.stringify(folderPickerTarget);
+        if (modal.dataset.folderPickerTarget === targetKey) return;
+
+        var tree = {name: '', expanded: true, empty: false, children: []};
+        var branch = tree;
+        (folderPickerTarget.components || []).forEach(function(name) {
+          var child = {name: name, expanded: true, empty: false, children: []};
+          branch.children = [child];
+          branch = child;
+        });
+        modal.dataset.folderPickerTarget = targetKey;
+        Shiny.setInputValue('folder-modal', {
+          tree: tree,
+          selectedRoot: folderPickerTarget.root,
+          contentPath: [''].concat(folderPickerTarget.components || []),
+          nonce: Date.now()
+        }, {priority: 'event'});
+      }
+
+      function revealFolderPickerTarget() {
+        var modal = document.getElementById('folder-modal');
+        if (!modal || !folderPickerTarget) return;
+        var selected = modal.querySelector('.sF-dirList .sF-directory.selected');
+        if (!selected) return;
+        var targetKey = JSON.stringify(folderPickerTarget);
+        if (modal.dataset.folderPickerVisible === targetKey) return;
+        modal.dataset.folderPickerVisible = targetKey;
+        selected.scrollIntoView({block: 'center'});
+      }
+
+      Shiny.addCustomMessageHandler('set-folder-picker-path', function(message) {
+        folderPickerTarget = message;
+        var modal = document.getElementById('folder-modal');
+        if (modal) {
+          delete modal.dataset.folderPickerTarget;
+          delete modal.dataset.folderPickerVisible;
+        }
+        renderFolderPickerPath();
+        window.setTimeout(initializeFolderPickerPath, 0);
+      });
+
+      var folderModalObserver = new MutationObserver(function() {
+        renderFolderPickerPath();
+        initializeFolderPickerPath();
+        revealFolderPickerTarget();
+      });
+      folderModalObserver.observe(document.documentElement, {childList: true, subtree: true});
     "))
   ),
   h3("Digitizing Point Editor"),
@@ -1241,8 +1347,11 @@ ui <- fluidPage(
       class = "editor-column control-column",
       div(
         class = "control-panel",
-        selectInput("folder", "폴더 (data-raw)", choices = setNames("", "폴더 선택"),
-                    selected = "", selectize = FALSE),
+        shinyFiles::shinyDirButton(
+          "folder", "폴더 선택", "PNG가 있는 폴더를 선택하세요",
+          class = "folder-select-button"
+        ),
+        div(class = "selected-folder-line", textOutput("folder_path", inline = TRUE)),
         selectInput("dataset", "그림", choices = setNames("", "그림 선택"),
                     selected = "", selectize = FALSE),
         div(
@@ -1480,7 +1589,21 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  folders <- reactiveVal(discover_folders())
+  initial_folder <- normalizePath(
+    file.path(data_raw_dir, "2004_MRP79R1"), mustWork = TRUE
+  )
+  home_dir <- normalizePath("~", mustWork = TRUE)
+  display_folder_path <- function(path) {
+    path <- normalizePath(path, mustWork = TRUE)
+    home_prefix <- paste0(home_dir, .Platform$file.sep)
+    if (identical(path, home_dir)) return("~")
+    if (startsWith(path, home_prefix)) {
+      return(paste0("~/", substring(path, nchar(home_prefix) + 1L)))
+    }
+    path
+  }
+  selected_folder <- reactiveVal(initial_folder)
+  folder_roots <- c("홈" = home_dir)
   catalog <- reactiveVal(list())
   rv <- reactiveValues(
     data = NULL, image = NULL, raster = NULL, dataset = NULL,
@@ -1541,11 +1664,12 @@ server <- function(input, output, session) {
     )
     if (is.null(save_path)) return(NULL)
     finalize_point_order()
+    saved_series <- series_for_save(rv$series, rv$data)
 
     metadata <- c(
       list(source_image = basename(rv$dataset$source_path)),
       calibration_to_metadata(rv$calibration),
-      list(groups = series_to_metadata(rv$series))
+      list(groups = series_to_metadata(saved_series))
     )
     yaml_text <- yaml::as.yaml(metadata)
     yaml_lines <- strsplit(yaml_text, "\n", fixed = TRUE)[[1]]
@@ -1631,12 +1755,6 @@ server <- function(input, output, session) {
     )
   }
 
-  update_folders <- function(selected = NULL) {
-    choices <- c(setNames("", "폴더 선택"), setNames(names(folders()), names(folders())))
-    if (is.null(selected)) selected <- ""
-    updateSelectInput(session, "folder", choices = choices, selected = selected)
-  }
-
   update_catalog <- function(folder_path, selected = NULL) {
     clear_dataset()
     datasets <- discover_images(folder_path)
@@ -1656,13 +1774,58 @@ server <- function(input, output, session) {
     updateSelectInput(session, "dataset", choices = choices, selected = selected)
   }
 
-  observeEvent(TRUE, update_folders("2004_MRP79R1"), once = TRUE)
+  folder_picker_target <- function(path) {
+    path <- normalizePath(path, mustWork = TRUE)
+    home_prefix <- paste0(home_dir, .Platform$file.sep)
+    if (identical(path, home_dir)) {
+      relative_path <- ""
+    } else if (startsWith(path, home_prefix)) {
+      relative_path <- substring(path, nchar(home_prefix) + 1L)
+    } else {
+      stop("홈 폴더 밖의 경로는 선택할 수 없습니다: ", path)
+    }
+    components <- if (nzchar(relative_path)) {
+      strsplit(relative_path, .Platform$file.sep, fixed = TRUE)[[1]]
+    } else {
+      character()
+    }
+    list(root = "홈", components = unname(components))
+  }
+
+  update_folder_picker_target <- function(path) {
+    session$sendCustomMessage(
+      "set-folder-picker-path", folder_picker_target(path)
+    )
+  }
+
+  shinyFiles::shinyDirChoose(
+    input, "folder", session = session, roots = folder_roots,
+    defaultRoot = "홈", defaultPath = "",
+    allowDirCreate = FALSE
+  )
+
+  output$folder_path <- renderText({
+    paste("선택 폴더:", display_folder_path(selected_folder()))
+  })
+
+  observeEvent(TRUE, {
+    update_catalog(initial_folder)
+    update_folder_picker_target(initial_folder)
+  }, once = TRUE)
 
   observeEvent(input$folder, {
-    req(input$folder %in% names(folders()))
+    folder_path <- shinyFiles::parseDirPath(folder_roots, input$folder)
+    if (!length(folder_path) || !dir.exists(folder_path)) return()
+    folder_path <- normalizePath(folder_path, mustWork = TRUE)
+    if (identical(folder_path, selected_folder())) {
+      update_folder_picker_target(folder_path)
+      return()
+    }
     save_changes(auto = TRUE)
-    update_catalog(folders()[[input$folder]])
-  })
+    selected_folder(folder_path)
+    update_folder_picker_target(folder_path)
+    update_catalog(folder_path)
+  }, ignoreInit = TRUE)
 
   series_choices <- function() {
     if (is.null(rv$series) || !nrow(rv$series)) return(character())
@@ -2010,8 +2173,7 @@ server <- function(input, output, session) {
         stop("축 설정을 읽을 수 없습니다: ", project_path)
       }
       group_metadata <- if (!is.null(metadata$groups)) metadata$groups else metadata$series
-      saved_series <- series_from_metadata(group_metadata)
-      if (!nrow(saved_series)) saved_series <- default_groups()
+      persisted_series <- series_from_metadata(group_metadata)
       data <- saved_data[required]
       names(data)[names(data) == group_id_column] <- "series_id"
       data$point_id <- if ("point_id" %in% names(saved_data)) {
@@ -2024,9 +2186,10 @@ server <- function(input, output, session) {
       data$pixel_x <- as.numeric(data$pixel_x)
       data$pixel_y <- as.numeric(data$pixel_y)
       if (anyDuplicated(data$point_id)) stop("point_id가 중복되어 있습니다")
-      if (nrow(data) && any(!data$series_id %in% saved_series$id)) {
+      if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
         stop("존재하지 않는 group_id를 사용하는 포인트가 있습니다")
       }
+      saved_series <- restore_default_groups(persisted_series)
       calibration <- saved_calibration
       series <- saved_series
       loaded_project <- TRUE
@@ -2593,7 +2756,7 @@ server <- function(input, output, session) {
   observeEvent(input$calibration_undo, undo_target())
 
   observeEvent(input$reload, {
-    req(input$dataset)
+    req(rv$dataset)
     cancel_mode <- rv$active_edit_mode
     mode_label <- edit_mode_label(cancel_mode)
     has_changes <- edit_mode_changes_pending(cancel_mode)
@@ -2617,7 +2780,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$confirm_reload, {
-    req(input$dataset, rv$pending_cancel_mode)
+    req(rv$dataset, rv$pending_cancel_mode)
     cancel_mode <- rv$pending_cancel_mode
     removeModal()
     discard_edit_mode_changes(cancel_mode)
