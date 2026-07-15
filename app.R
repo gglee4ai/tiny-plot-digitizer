@@ -1593,15 +1593,6 @@ server <- function(input, output, session) {
     file.path(data_raw_dir, "2004_MRP79R1"), mustWork = TRUE
   )
   home_dir <- normalizePath("~", mustWork = TRUE)
-  display_folder_path <- function(path) {
-    path <- normalizePath(path, mustWork = TRUE)
-    home_prefix <- paste0(home_dir, .Platform$file.sep)
-    if (identical(path, home_dir)) return("~")
-    if (startsWith(path, home_prefix)) {
-      return(paste0("~/", substring(path, nchar(home_prefix) + 1L)))
-    }
-    path
-  }
   selected_folder <- reactiveVal(initial_folder)
   folder_roots <- c("홈" = home_dir)
   catalog <- reactiveVal(list())
@@ -1805,7 +1796,7 @@ server <- function(input, output, session) {
   )
 
   output$folder_path <- renderText({
-    paste("선택 폴더:", display_folder_path(selected_folder()))
+    paste("선택 폴더:", basename(selected_folder()))
   })
 
   observeEvent(TRUE, {
