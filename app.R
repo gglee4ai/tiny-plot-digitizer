@@ -11,73 +11,12 @@ repo_dir <- normalizePath(file.path(app_dir, "../.."))
 data_raw_dir <- file.path(repo_dir, "data-raw")
 source(file.path(data_raw_dir, "01_build-helpers.R"))
 
-number_pattern <- "[-+]?[0-9]*\\.?[0-9]+"
-
 round_pixel_coordinate <- function(value) {
   round(suppressWarnings(as.numeric(value)) * 2) / 2
 }
 
 format_pixel_coordinate <- function(value) {
   format(round_pixel_coordinate(value), scientific = FALSE, trim = TRUE)
-}
-
-resolve_column <- function(name, columns) {
-  name <- trimws(name)
-  if (name %in% columns) return(name)
-  if (name == "fluence") {
-    match <- grep("^fluence_.*1e22", columns, value = TRUE)
-    if (length(match)) return(match[1])
-  }
-  NULL
-}
-
-parse_calibration <- function(lines, columns) {
-  line <- grep("^# Axis calibration.*pixel_x|^# Axis calibration.*x =", lines, value = TRUE)
-  if (!length(line)) return(NULL)
-
-  formula_text <- sub("^[^:]+: *", "", line[1])
-  formula_text <- sub("\\.$", "", formula_text)
-  parts <- strsplit(formula_text, ";", fixed = TRUE)[[1]]
-  if (length(parts) < 2) return(NULL)
-
-  x_text <- sub("^(pixel_x|x) *= *", "", trimws(parts[1]))
-  y_text <- sub("^(pixel_y|y) *= *", "", trimws(parts[2]))
-
-  x_log_pattern <- sprintf("^(%s) *\\+ *(%s) *\\* *log10\\(([^)]+)\\)$", number_pattern, number_pattern)
-  x_linear_pattern <- sprintf("^(%s) *\\+ *(%s) *\\* *([A-Za-z0-9_]+)$", number_pattern, number_pattern)
-
-  match <- regmatches(x_text, regexec(x_log_pattern, x_text))[[1]]
-  if (length(match)) {
-    x <- list(intercept = as.numeric(match[2]), scale = as.numeric(match[3]),
-              column = resolve_column(match[4], columns), transform = "log10")
-  } else {
-    match <- regmatches(x_text, regexec(x_linear_pattern, x_text))[[1]]
-    if (!length(match)) return(NULL)
-    x <- list(intercept = as.numeric(match[2]), scale = as.numeric(match[3]),
-              column = resolve_column(match[4], columns), transform = "linear")
-  }
-  if (is.null(x$column)) return(NULL)
-
-  y_tilt_pattern <- sprintf(
-    "^(%s) *\\+ *(%s) *\\* *([A-Za-z0-9_]+) *- *(%s) *\\* *([A-Za-z0-9_]+)$",
-    number_pattern, number_pattern, number_pattern
-  )
-  y_linear_pattern <- sprintf("^(%s) *- *(%s) *\\* *([A-Za-z0-9_]+)$", number_pattern, number_pattern)
-
-  match <- regmatches(y_text, regexec(y_tilt_pattern, y_text))[[1]]
-  if (length(match)) {
-    y <- list(intercept = as.numeric(match[2]), tilt = as.numeric(match[3]),
-              tilt_column = resolve_column(match[4], columns), scale = as.numeric(match[5]),
-              column = resolve_column(match[6], columns))
-  } else {
-    match <- regmatches(y_text, regexec(y_linear_pattern, y_text))[[1]]
-    if (!length(match)) return(NULL)
-    y <- list(intercept = as.numeric(match[2]), tilt = 0, tilt_column = NULL,
-              scale = as.numeric(match[3]), column = resolve_column(match[4], columns))
-  }
-  if (is.null(y$column) || (y$tilt != 0 && is.null(y$tilt_column))) return(NULL)
-
-  list(type = "formula", x = x, y = y, text = formula_text)
 }
 
 parse_projective_calibration <- function(metadata, columns) {
@@ -143,69 +82,7 @@ parse_projective_calibration <- function(metadata, columns) {
   if (is.null(updated)) calibration else updated
 }
 
-read_source_name <- function(lines, metadata) {
-  if (!is.null(metadata$source_figure)) return(as.character(metadata$source_figure))
-  line <- grep("^# Source figure:", lines, value = TRUE)
-  if (!length(line)) return(NULL)
-  trimws(sub("^# Source figure: *", "", line[1]))
-}
-
-discover_folders <- function() {
-  paths <- list.dirs(data_raw_dir, recursive = FALSE, full.names = TRUE)
-  setNames(paths, basename(paths))
-}
-
-discover_datasets <- function(folder_path) {
-  files <- list.files(folder_path, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)
-  datasets <- list()
-
-  for (path in files) {
-    lines <- readLines(path, warn = FALSE)
-    metadata <- try(read_csv_metadata(path), silent = TRUE)
-    if (inherits(metadata, "try-error")) metadata <- list()
-    source_name <- read_source_name(lines, metadata)
-    if (is.null(source_name)) next
-
-    data <- try(read.csv(path, comment.char = "#", check.names = FALSE), silent = TRUE)
-    if (inherits(data, "try-error") || !nrow(data)) next
-
-    calibration <- parse_projective_calibration(metadata, names(data))
-    if (is.null(calibration)) calibration <- parse_calibration(lines, names(data))
-    source_path <- file.path(dirname(path), source_name)
-    if (is.null(calibration) || !file.exists(source_path)) next
-
-    key <- substring(normalizePath(path), nchar(repo_dir) + 2)
-    datasets[[key]] <- list(
-      path = normalizePath(path),
-      source_path = normalizePath(source_path),
-      calibration = calibration,
-      label = substring(normalizePath(path), nchar(normalizePath(folder_path)) + 2)
-    )
-  }
-  datasets
-}
-
-forward_x <- function(values, calibration) {
-  transformed <- if (calibration$transform == "log10") log10(values) else values
-  calibration$intercept + calibration$scale * transformed
-}
-
-inverse_x <- function(pixel_x, calibration) {
-  value <- (pixel_x - calibration$intercept) / calibration$scale
-  if (calibration$transform == "log10") 10^value else max(0, value)
-}
-
-forward_y <- function(data, calibration) {
-  tilt_value <- if (calibration$tilt == 0) 0 else calibration$tilt * data[[calibration$tilt_column]]
-  calibration$intercept + tilt_value - calibration$scale * data[[calibration$column]]
-}
-
-inverse_y <- function(pixel_y, data, row, calibration) {
-  tilt_value <- if (calibration$tilt == 0) 0 else calibration$tilt * data[[calibration$tilt_column]][row]
-  max(0, (calibration$intercept + tilt_value - pixel_y) / calibration$scale)
-}
-
-projective_axis_values <- function(data, calibration) {
+axis_values <- function(data, calibration) {
   position <- project_pixels_to_unit(
     data$pixel_x,
     data$pixel_y,
@@ -224,16 +101,6 @@ projective_axis_values <- function(data, calibration) {
     minimum + position$y_fraction * (maximum - minimum)
   )
   data.frame(x = x, y = y)
-}
-
-axis_values <- function(data, calibration) {
-  if (calibration$type == "projective") {
-    return(projective_axis_values(data, calibration))
-  }
-  data.frame(
-    x = data[[calibration$x$column]],
-    y = data[[calibration$y$column]]
-  )
 }
 
 calibration_corners <- function(calibration, close = FALSE) {
@@ -530,90 +397,6 @@ draw_calibration_grid <- function(
   invisible()
 }
 
-format_yaml_number <- function(value) {
-  value <- as.numeric(value)
-  if (isTRUE(all.equal(value, round(value), tolerance = 1e-10))) {
-    return(sprintf("%.1f", value))
-  }
-  format(value, scientific = FALSE, trim = TRUE, digits = 15)
-}
-
-serialize_calibration_box <- function(calibration) {
-  box <- calibration$box
-  lines <- "# calibration_box:"
-  for (name in names(box)) {
-    value <- box[[name]]
-    if (is.list(value) && all(c("pixel_x", "pixel_y") %in% names(value))) {
-      lines <- c(
-        lines,
-        paste0("#   ", name, ":"),
-        paste0("#     pixel_x: ", format_yaml_number(value$pixel_x)),
-        paste0("#     pixel_y: ", format_yaml_number(value$pixel_y))
-      )
-    } else {
-      lines <- c(lines, paste0("#   ", name, ": ", format_yaml_number(value)))
-    }
-  }
-  lines
-}
-
-serialize_calibration_axes <- function(calibration) {
-  lines <- "# calibration_axes:"
-  for (name in c("x1", "x2", "y1", "y2")) {
-    point <- calibration$axis_points[[name]]
-    lines <- c(
-      lines,
-      paste0("#   ", name, ":"),
-      paste0("#     pixel_x: ", format_yaml_number(point$pixel_x)),
-      paste0("#     pixel_y: ", format_yaml_number(point$pixel_y)),
-      paste0("#     value: ", format_yaml_number(point$value)),
-      paste0("#     source: ", point$source),
-      paste0("#     fraction: ", format_yaml_number(point$fraction))
-    )
-  }
-  lines
-}
-
-replace_calibration_axes <- function(lines, calibration) {
-  start <- grep("^# calibration_axes: *$", lines)
-  if (!length(start)) {
-    box_start <- grep("^# calibration_box: *$", lines)
-    if (length(box_start) != 1L) stop("calibration_box 블록을 찾을 수 없습니다.")
-    return(c(
-      if (box_start > 1L) lines[seq_len(box_start - 1L)] else character(),
-      serialize_calibration_axes(calibration),
-      lines[box_start:length(lines)]
-    ))
-  }
-  if (length(start) != 1L) stop("calibration_axes 블록이 중복되어 있습니다.")
-
-  following <- seq.int(start + 1L, length(lines))
-  next_top_level <- following[grepl("^# ([^ ]+?:|---)", lines[following])]
-  if (!length(next_top_level)) stop("calibration_axes 블록의 끝을 찾을 수 없습니다.")
-  end <- next_top_level[1] - 1L
-  c(
-    if (start > 1L) lines[seq_len(start - 1L)] else character(),
-    serialize_calibration_axes(calibration),
-    lines[seq.int(end + 1L, length(lines))]
-  )
-}
-
-replace_calibration_box <- function(lines, calibration) {
-  start <- grep("^# calibration_box: *$", lines)
-  if (length(start) != 1L) stop("calibration_box 블록을 찾을 수 없습니다.")
-
-  following <- seq.int(start + 1L, length(lines))
-  next_top_level <- following[grepl("^# ([^ ]+?:|---)", lines[following])]
-  if (!length(next_top_level)) stop("calibration_box 블록의 끝을 찾을 수 없습니다.")
-  end <- next_top_level[1] - 1L
-
-  c(
-    if (start > 1L) lines[seq_len(start - 1L)] else character(),
-    serialize_calibration_box(calibration),
-    lines[seq.int(end + 1L, length(lines))]
-  )
-}
-
 valid_projective_calibration <- function(calibration) {
   corners <- calibration_corners(calibration)
   if (nrow(unique(corners[c("pixel_x", "pixel_y")])) != 4L) return(FALSE)
@@ -638,92 +421,6 @@ valid_projective_calibration <- function(calibration) {
   !inherits(projected, "try-error") && all(is.finite(unlist(projected)))
 }
 
-sync_units <- function(data, row, changed_column) {
-  if (changed_column == "YS_ksi" && "YS_MPa" %in% names(data)) data$YS_MPa[row] <- data$YS_ksi[row] * 6.894757
-  if (changed_column == "YS_MPa" && "YS_ksi" %in% names(data)) data$YS_ksi[row] <- data$YS_MPa[row] / 6.894757
-  if (changed_column == "UTS_ksi" && "UTS_MPa" %in% names(data)) data$UTS_MPa[row] <- data$UTS_ksi[row] * 6.894757
-  if (changed_column == "UTS_MPa" && "UTS_ksi" %in% names(data)) data$UTS_ksi[row] <- data$UTS_MPa[row] / 6.894757
-  if (changed_column == "strain_rate_min" && "strain_rate_s" %in% names(data)) data$strain_rate_s[row] <- data$strain_rate_min[row] / 60
-  if (changed_column == "test_temp_C" && "test_temp_F" %in% names(data)) data$test_temp_F[row] <- data$test_temp_C[row] * 9 / 5 + 32
-  data
-}
-
-format_csv_value <- function(value, column) {
-  if (!length(value) || is.na(value)) return("")
-  if (column %in% c("pixel_x", "pixel_y")) return(format_pixel_coordinate(value))
-  if (grepl("fluence_.*1e22", column)) return(sprintf("%.3f", value))
-  if (column == "strain_rate_min") return(sprintf("%.6f", value))
-  if (column == "strain_rate_s") return(trimws(formatC(value, format = "fg", digits = 8)))
-  if (column %in% c("test_temp_C", "test_temp_F")) return(sprintf("%.1f", value))
-  if (grepl("_(MPa|ksi|pct)$", column)) return(sprintf("%.1f", value))
-  as.character(value)
-}
-
-split_csv_fields <- function(line) {
-  if (length(line) != 1L || is.na(line)) stop("유효하지 않은 CSV 행입니다.")
-  characters <- strsplit(line, "", fixed = TRUE)[[1]]
-  fields <- character()
-  field <- character()
-  quoted <- FALSE
-  index <- 1L
-
-  while (index <= length(characters)) {
-    character <- characters[index]
-    if (character == '"') {
-      field <- c(field, character)
-      if (quoted && index < length(characters) && characters[index + 1L] == '"') {
-        field <- c(field, '"')
-        index <- index + 1L
-      } else {
-        quoted <- !quoted
-      }
-    } else if (character == "," && !quoted) {
-      fields <- c(fields, paste(field, collapse = ""))
-      field <- character()
-    } else {
-      field <- c(field, character)
-    }
-    index <- index + 1L
-  }
-
-  c(fields, paste(field, collapse = ""))
-}
-
-escape_csv_field <- function(value) {
-  if (!length(value) || is.na(value)) return("")
-  value <- as.character(value)
-  if (grepl('[,"\\r\\n]', value) || grepl('^\\s|\\s$', value)) {
-    return(paste0('"', gsub('"', '""', value, fixed = TRUE), '"'))
-  }
-  value
-}
-
-update_csv_row <- function(line, data, row, columns, columns_on_disk) {
-  fields <- split_csv_fields(line)
-  if (length(fields) != length(columns_on_disk)) {
-    stop("CSV 행의 필드 수가 헤더와 일치하지 않습니다.")
-  }
-
-  for (column in intersect(columns, columns_on_disk)) {
-    index <- match(column, columns_on_disk)
-    fields[index] <- escape_csv_field(format_csv_value(data[[column]][row], column))
-  }
-  paste(fields, collapse = ",")
-}
-
-copy_csv_fields <- function(target, source, columns, columns_on_disk) {
-  target_fields <- split_csv_fields(target)
-  source_fields <- split_csv_fields(source)
-  if (length(target_fields) != length(columns_on_disk) ||
-      length(source_fields) != length(columns_on_disk)) {
-    stop("CSV 행의 필드 수가 헤더와 일치하지 않습니다.")
-  }
-
-  indexes <- match(intersect(columns, columns_on_disk), columns_on_disk)
-  target_fields[indexes] <- source_fields[indexes]
-  paste(target_fields, collapse = ",")
-}
-
 marker_glyph <- function(marker) {
   pch <- suppressWarnings(as.integer(marker))
   pch_glyphs <- c(
@@ -743,62 +440,6 @@ marker_pch <- function(marker) {
   pch <- suppressWarnings(as.integer(marker))
   if (!is.na(pch) && pch >= 0L && pch <= 25L) return(pch)
   marker_glyph(marker)
-}
-
-build_series_catalog <- function(data, calibration) {
-  if (!nrow(data)) return(NULL)
-
-  marker <- if ("marker" %in% names(data)) as.character(data$marker) else rep("point", nrow(data))
-  condition_columns <- grep(
-    "temp|temperature|irradiation|condition|material|heat|fluence_reported",
-    names(data), value = TRUE, ignore.case = TRUE
-  )
-  axis_columns <- if (calibration$type == "formula") {
-    c(calibration$x$column, calibration$y$column)
-  } else {
-    character()
-  }
-  condition_columns <- setdiff(condition_columns, c("marker", "pixel_x", "pixel_y", axis_columns))
-  profile_columns <- intersect(c("marker", condition_columns), names(data))
-
-  marker_levels <- unique(marker)
-  representative_rows <- vapply(marker_levels, function(marker_value) {
-    rows <- which(marker == marker_value)
-    if (!length(profile_columns)) return(rows[1])
-    keys <- apply(data[rows, profile_columns, drop = FALSE], 1, function(values) {
-      paste(ifelse(is.na(values), "<NA>", as.character(values)), collapse = "\r")
-    })
-    counts <- table(keys)
-    rows[match(names(counts)[which.max(counts)], keys)]
-  }, integer(1))
-
-  profiles <- data[representative_rows, profile_columns, drop = FALSE]
-  varying_columns <- profile_columns[vapply(profiles, function(values) {
-    length(unique(ifelse(is.na(values), "<NA>", as.character(values)))) > 1
-  }, logical(1))]
-  label_columns <- setdiff(varying_columns, "marker")
-
-  labels <- vapply(seq_along(marker_levels), function(index) {
-    marker_value <- marker_levels[index]
-    label <- paste(marker_glyph(marker_value), marker_value)
-    if (length(label_columns)) {
-      details <- vapply(label_columns, function(column) {
-        value <- profiles[[column]][index]
-        if (is.na(value)) value <- "NA"
-        paste0(column, "=", value)
-      }, character(1))
-      label <- paste(label, paste(details, collapse = " | "), sep = " | ")
-    }
-    label
-  }, character(1))
-
-  list(
-    profiles = profiles,
-    profile_columns = profile_columns,
-    representative_rows = representative_rows,
-    marker_levels = marker_levels,
-    choices = setNames(seq_along(marker_levels), labels)
-  )
 }
 
 is_digitizing_project_file <- function(path, source_path) {
@@ -1598,14 +1239,13 @@ server <- function(input, output, session) {
   catalog <- reactiveVal(list())
   rv <- reactiveValues(
     data = NULL, image = NULL, raster = NULL, dataset = NULL,
-    prefix_lines = NULL, row_lines = NULL, suffix_lines = NULL,
-    columns_on_disk = NULL, calibration = NULL,
-    point_baseline_data = NULL, point_baseline_row_lines = NULL,
+    calibration = NULL,
+    point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
     pending_cancel_mode = NULL,
     dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
     calibration_undo = NULL,
-    series_catalog = NULL, add_mode = FALSE, add_series = NULL,
+    add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_switch_status = NULL,
     updating_calibration_inputs = FALSE,
     calibration_target = NULL, calibration_point = NULL,
@@ -1712,13 +1352,8 @@ server <- function(input, output, session) {
     rv$image <- NULL
     rv$raster <- NULL
     rv$dataset <- NULL
-    rv$prefix_lines <- NULL
-    rv$row_lines <- NULL
-    rv$suffix_lines <- NULL
-    rv$columns_on_disk <- NULL
     rv$calibration <- NULL
     rv$point_baseline_data <- NULL
-    rv$point_baseline_row_lines <- NULL
     rv$calibration_baseline <- NULL
     rv$series <- NULL
     rv$series_baseline <- NULL
@@ -1728,7 +1363,6 @@ server <- function(input, output, session) {
     rv$calibration_dirty <- FALSE
     rv$point_undo <- NULL
     rv$calibration_undo <- NULL
-    rv$series_catalog <- NULL
     rv$add_mode <- FALSE
     rv$add_series <- NULL
     rv$selected <- NULL
@@ -1946,8 +1580,6 @@ server <- function(input, output, session) {
     )
     invisible()
   }
-  select_series_for_row <- function(row) invisible()
-
   update_calibration_inputs <- function() {
     calibration <- rv$calibration
     if (is.null(calibration) || calibration$type != "projective") return(invisible())
@@ -2133,8 +1765,6 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  update_row_line <- function(row, columns = NULL) invisible()
-
   load_dataset <- function(key) {
     req(key, key %in% names(catalog()))
     dataset <- catalog()[[key]]
@@ -2190,15 +1820,10 @@ server <- function(input, output, session) {
     rv$image <- source_gray
     rv$raster <- as.raster(source_image)
     rv$dataset <- dataset
-    rv$prefix_lines <- NULL
-    rv$row_lines <- NULL
-    rv$suffix_lines <- NULL
-    rv$columns_on_disk <- names(data)
     rv$calibration <- calibration
     rv$series <- series
     sort_points()
     rv$point_baseline_data <- rv$data
-    rv$point_baseline_row_lines <- NULL
     rv$calibration_baseline <- calibration
     rv$series_baseline <- series
     rv$pending_cancel_mode <- NULL
@@ -2240,13 +1865,6 @@ server <- function(input, output, session) {
 
     current_mode <- rv$active_edit_mode
     if (identical(requested_mode, current_mode)) return()
-
-    if (identical(requested_mode, "calibration") &&
-        rv$calibration$type != "projective") {
-      update_edit_mode_input(current_mode)
-      rv$status <- "이 그림은 기존 수식형 축 보정을 사용합니다"
-      return()
-    }
 
     if (!edit_mode_changes_pending(current_mode)) {
       activate_edit_mode(requested_mode)
@@ -2537,17 +2155,6 @@ server <- function(input, output, session) {
     select_point_id(point_id)
   })
 
-  recalculate_row <- function(data, row) {
-    calibration <- rv$calibration
-    if (calibration$type == "projective") return(data)
-    x_column <- calibration$x$column
-    y_column <- calibration$y$column
-    data[[x_column]][row] <- inverse_x(data$pixel_x[row], calibration$x)
-    data <- sync_units(data, row, x_column)
-    data[[y_column]][row] <- inverse_y(data$pixel_y[row], data, row, calibration$y)
-    sync_units(data, row, y_column)
-  }
-
   move_selected <- function(direction) {
     row <- selected_row()
     remember_point_change(row)
@@ -2561,8 +2168,7 @@ server <- function(input, output, session) {
     if (direction == "up") data$pixel_y[row] <- max(0, data$pixel_y[row] - step)
     if (direction == "down") data$pixel_y[row] <- min(height, data$pixel_y[row] + step)
 
-    rv$data <- recalculate_row(data, row)
-    update_row_line(row)
+    rv$data <- data
     mark_changed()
     update_point_label(row)
   }
