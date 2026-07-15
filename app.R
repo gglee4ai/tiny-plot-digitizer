@@ -263,7 +263,7 @@ rename_calibration_axis <- function(calibration, axis, new_name) {
   if (!grepl("^[A-Za-z][A-Za-z0-9_]*$", new_name)) {
     stop("축 이름은 영문자로 시작하고 영문, 숫자, 밑줄만 사용할 수 있습니다.")
   }
-  if (new_name %in% c("point_id", "group_id", "series_id", "pixel_x", "pixel_y")) {
+  if (new_name %in% c("point_id", "group", "series_id", "pixel_x", "pixel_y")) {
     stop("포인트 정보 열과 같은 이름은 축 이름으로 사용할 수 없습니다.")
   }
 
@@ -455,7 +455,7 @@ is_digitizing_project_file <- function(path, source_path) {
   )
   if (inherits(columns, "try-error")) return(FALSE)
   all(c("pixel_x", "pixel_y") %in% columns) &&
-    any(c("group_id", "series_id") %in% columns) &&
+    "group" %in% columns &&
     !is.null(metadata$calibration_box) && !is.null(metadata$calibration_axes)
 }
 
@@ -574,40 +574,87 @@ restore_default_groups <- function(series) {
 
 series_from_metadata <- function(value) {
   if (is.null(value) || !length(value)) return(empty_series())
-  rows <- lapply(value, function(item) {
+  item_names <- names(value)
+  if (is.null(item_names) || any(!nzchar(item_names))) {
+    stop("groups 메타데이터의 그룹 명칭을 읽을 수 없습니다")
+  }
+  rows <- lapply(seq_along(value), function(index) {
+    item <- value[[index]]
+    required <- c("marker", "color", "size", "alpha")
+    if (!all(required %in% names(item))) {
+      stop("groups 메타데이터의 필드를 확인하세요")
+    }
     data.frame(
-      id = as.integer(item$id),
-      name = as.character(item$name),
+      id = index,
+      name = item_names[index],
       marker = as.character(item$marker),
       color = as.character(item$color),
-      size = if (is.null(item$size)) 1 else as.numeric(item$size),
-      alpha = if (is.null(item$alpha)) 1 else as.numeric(item$alpha),
+      size = as.numeric(item$size),
+      alpha = as.numeric(item$alpha),
       stringsAsFactors = FALSE
     )
   })
   series <- do.call(rbind, rows)
-  series <- series[order(series$id), , drop = FALSE]
   rownames(series) <- NULL
+  if (anyDuplicated(series$name)) stop("그룹 명칭이 중복되어 있습니다")
   series
 }
 
-series_to_metadata <- function(series) {
-  lapply(seq_len(nrow(series)), function(index) {
-    list(
-      id = as.integer(series$id[index]),
-      name = as.character(series$name[index]),
-      marker = as.character(series$marker[index]),
-      color = as.character(series$color[index]),
-      size = as.numeric(series$size[index]),
-      alpha = as.numeric(series$alpha[index])
-    )
-  })
+yaml_quote <- function(value) {
+  encodeString(as.character(value), quote = '"', na.encode = FALSE)
 }
 
-calibration_to_metadata <- function(calibration) {
-  list(
-    calibration_axes = calibration$axis_points,
-    calibration_box = calibration$box
+format_yaml_number <- function(value) {
+  value <- as.numeric(value)
+  if (length(value) != 1L || !is.finite(value)) {
+    stop("YAML 숫자가 유효하지 않습니다")
+  }
+  format(value, scientific = FALSE, trim = TRUE, digits = 15)
+}
+
+serialize_project_metadata <- function(source_image, calibration, series) {
+  if (anyDuplicated(series$name)) stop("그룹 명칭이 중복되어 저장할 수 없습니다")
+  number <- format_yaml_number
+  axis_lines <- vapply(c("x1", "x2", "y1", "y2"), function(name) {
+    point <- calibration$axis_points[[name]]
+    sprintf(
+      "  %s: {pixel_x: %s, pixel_y: %s, value: %s, source: %s, fraction: %s}",
+      name, number(point$pixel_x), number(point$pixel_y), number(point$value),
+      yaml_quote(point$source), number(point$fraction)
+    )
+  }, character(1))
+
+  corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
+  corner_lines <- vapply(corner_names, function(name) {
+    point <- calibration$box[[name]]
+    sprintf(
+      "  %s: {pixel_x: %s, pixel_y: %s}",
+      name, number(point$pixel_x), number(point$pixel_y)
+    )
+  }, character(1))
+  setting_names <- setdiff(names(calibration$box), corner_names)
+  setting_lines <- vapply(setting_names, function(name) {
+    paste0("  ", name, ": ", number(calibration$box[[name]]))
+  }, character(1))
+
+  group_lines <- if (nrow(series)) {
+    vapply(seq_len(nrow(series)), function(index) {
+      sprintf(
+        "  %s: {marker: %s, color: %s, size: %s, alpha: %s}",
+        yaml_quote(series$name[index]),
+        yaml_quote(series$marker[index]), yaml_quote(series$color[index]),
+        number(series$size[index]), number(series$alpha[index])
+      )
+    }, character(1))
+  } else {
+    character()
+  }
+
+  c(
+    paste0("source_image: ", yaml_quote(basename(source_image))),
+    "calibration_axes:", axis_lines,
+    "calibration_box:", corner_lines, setting_lines,
+    if (length(group_lines)) c("groups:", group_lines) else "groups: {}"
   )
 }
 
@@ -1001,7 +1048,7 @@ ui <- fluidPage(
       folderModalObserver.observe(document.documentElement, {childList: true, subtree: true});
     "))
   ),
-  h3("Digitizing Point Editor"),
+  h3("Tiny Plot Digitizer"),
   fluidRow(
     class = "editor-layout",
     column(
@@ -1366,22 +1413,19 @@ server <- function(input, output, session) {
     if (is.null(save_path)) return(NULL)
     finalize_point_order()
     saved_series <- series_for_save(rv$series, rv$data)
-
-    metadata <- c(
-      list(source_image = basename(rv$dataset$source_path)),
-      calibration_to_metadata(rv$calibration),
-      list(groups = series_to_metadata(saved_series))
+    yaml_lines <- serialize_project_metadata(
+      rv$dataset$source_path, rv$calibration, saved_series
     )
-    yaml_text <- yaml::as.yaml(metadata)
-    yaml_lines <- strsplit(yaml_text, "\n", fixed = TRUE)[[1]]
 
     body <- rv$data
-    body$group_id <- body$series_id
+    group_rows <- match(body$series_id, saved_series$id)
+    if (anyNA(group_rows)) stop("포인트의 그룹 정보를 찾을 수 없습니다")
+    body$group <- saved_series$name[group_rows]
     values <- axis_values(body, rv$calibration)
     body[[rv$calibration$x$column]] <- values$x
     body[[rv$calibration$y$column]] <- values$y
     body <- body[c(
-      "group_id", "pixel_x", "pixel_y",
+      "group", "pixel_x", "pixel_y",
       rv$calibration$x$column, rv$calibration$y$column
     )]
     csv_lines <- capture.output(
@@ -1836,12 +1880,7 @@ server <- function(input, output, session) {
     if (!is.null(project_path) && file.exists(project_path)) {
       metadata <- read_csv_metadata(project_path)
       saved_data <- read.csv(project_path, comment.char = "#", check.names = FALSE)
-      group_id_column <- if ("group_id" %in% names(saved_data)) {
-        "group_id"
-      } else {
-        "series_id"
-      }
-      required <- c(group_id_column, "pixel_x", "pixel_y")
+      required <- c("group", "pixel_x", "pixel_y")
       if (!all(required %in% names(saved_data))) {
         stop("독립 프로젝트 형식이 아닌 CSV입니다: ", project_path)
       }
@@ -1849,10 +1888,14 @@ server <- function(input, output, session) {
       if (is.null(saved_calibration)) {
         stop("축 설정을 읽을 수 없습니다: ", project_path)
       }
-      group_metadata <- if (!is.null(metadata$groups)) metadata$groups else metadata$series
-      persisted_series <- series_from_metadata(group_metadata)
+      persisted_series <- series_from_metadata(metadata$groups)
       data <- saved_data[required]
-      names(data)[names(data) == group_id_column] <- "series_id"
+      group_rows <- match(as.character(data$group), persisted_series$name)
+      if (anyNA(group_rows)) {
+        stop("CSV의 그룹 명칭을 groups 메타데이터에서 찾을 수 없습니다")
+      }
+      data$group <- persisted_series$id[group_rows]
+      names(data)[names(data) == "group"] <- "series_id"
       data$point_id <- if ("point_id" %in% names(saved_data)) {
         as.integer(saved_data$point_id)
       } else {
@@ -1864,7 +1907,7 @@ server <- function(input, output, session) {
       data$pixel_y <- as.numeric(data$pixel_y)
       if (anyDuplicated(data$point_id)) stop("point_id가 중복되어 있습니다")
       if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
-        stop("존재하지 않는 group_id를 사용하는 포인트가 있습니다")
+        stop("groups 메타데이터에 없는 그룹을 사용하는 포인트가 있습니다")
       }
       saved_series <- restore_default_groups(persisted_series)
       calibration <- saved_calibration
@@ -1998,6 +2041,11 @@ server <- function(input, output, session) {
       value <- trimws(value)
       if (!nzchar(value)) {
         rv$status <- "그룹 명칭을 입력하세요"
+        update_series_inputs(id)
+        return()
+      }
+      if (value %in% rv$series$name[-row]) {
+        rv$status <- "그룹 명칭은 서로 달라야 합니다"
         update_series_inputs(id)
         return()
       }
