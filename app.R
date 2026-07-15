@@ -1243,7 +1243,7 @@ server <- function(input, output, session) {
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
     pending_cancel_mode = NULL,
-    dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
+    point_dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
     calibration_undo = NULL,
     add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_switch_status = NULL,
@@ -1252,6 +1252,54 @@ server <- function(input, output, session) {
     active_edit_mode = "point", pending_edit_mode = NULL,
     updating_edit_mode = FALSE
   )
+
+  mode_changes_pending <- function(mode) {
+    if (identical(mode, "point")) return(isTRUE(rv$point_dirty))
+    if (identical(mode, "calibration")) return(isTRUE(rv$calibration_dirty))
+    stop("알 수 없는 편집 모드입니다: ", mode)
+  }
+
+  unsaved_changes_pending <- function() {
+    mode_changes_pending("point") || mode_changes_pending("calibration")
+  }
+
+  unsaved_status <- function() {
+    if (unsaved_changes_pending()) "저장되지 않은 변경" else ""
+  }
+
+  mark_mode_changed <- function(mode, status = "저장되지 않은 변경") {
+    if (identical(mode, "point")) {
+      rv$point_dirty <- TRUE
+    } else if (identical(mode, "calibration")) {
+      rv$calibration_dirty <- TRUE
+    } else {
+      stop("알 수 없는 편집 모드입니다: ", mode)
+    }
+    rv$status <- status
+    invisible()
+  }
+
+  capture_mode_baseline <- function(mode) {
+    if (identical(mode, "point")) {
+      rv$point_baseline_data <- rv$data
+      rv$series_baseline <- rv$series
+      rv$point_dirty <- FALSE
+      rv$point_undo <- NULL
+    } else if (identical(mode, "calibration")) {
+      rv$calibration_baseline <- rv$calibration
+      rv$calibration_dirty <- FALSE
+      rv$calibration_undo <- NULL
+    } else {
+      stop("알 수 없는 편집 모드입니다: ", mode)
+    }
+    invisible()
+  }
+
+  capture_all_baselines <- function() {
+    capture_mode_baseline("point")
+    capture_mode_baseline("calibration")
+    invisible()
+  }
 
   save_path_for_dataset <- function(dataset) {
     if (is.null(dataset) || is.null(dataset$source_path)) return(NULL)
@@ -1285,7 +1333,7 @@ server <- function(input, output, session) {
   }
 
   save_changes <- function(auto = FALSE) {
-    if (is.null(rv$data) || is.null(rv$dataset) || !rv$dirty) return(NULL)
+    if (is.null(rv$data) || is.null(rv$dataset) || !unsaved_changes_pending()) return(NULL)
     save_path <- tryCatch(
       save_path_for_dataset(rv$dataset),
       error = function(error) {
@@ -1329,13 +1377,7 @@ server <- function(input, output, session) {
       current_catalog[[dataset_key]]$load_path <- save_path
       catalog(current_catalog)
     }
-    rv$dirty <- FALSE
-    rv$calibration_dirty <- FALSE
-    rv$point_baseline_data <- rv$data
-    rv$calibration_baseline <- rv$calibration
-    rv$series_baseline <- rv$series
-    rv$point_undo <- NULL
-    rv$calibration_undo <- NULL
+    capture_all_baselines()
 
     prefix <- if (auto) "자동 저장됨:" else "저장됨:"
     message <- paste(prefix, relative_repo_path(save_path))
@@ -1359,7 +1401,7 @@ server <- function(input, output, session) {
     rv$series_baseline <- NULL
     rv$pending_cancel_mode <- NULL
     rv$pending_edit_mode <- NULL
-    rv$dirty <- FALSE
+    rv$point_dirty <- FALSE
     rv$calibration_dirty <- FALSE
     rv$point_undo <- NULL
     rv$calibration_undo <- NULL
@@ -1643,7 +1685,7 @@ server <- function(input, output, session) {
     rv$point_undo <- list(
       data = rv$data,
       point_id = rv$data$point_id[row],
-      dirty = rv$dirty
+      point_dirty = rv$point_dirty
     )
   }
 
@@ -1656,20 +1698,7 @@ server <- function(input, output, session) {
     rv$calibration_undo <- list(
       target = calibration_target_key(),
       calibration = rv$calibration,
-      dirty = rv$dirty,
       calibration_dirty = rv$calibration_dirty
-    )
-  }
-
-  mark_changed <- function(status = "저장되지 않은 변경") {
-    rv$dirty <- TRUE
-    rv$status <- status
-  }
-
-  point_changes_pending <- function() {
-    !is.null(rv$point_baseline_data) && (
-      !identical(rv$data, rv$point_baseline_data) ||
-      !identical(rv$series, rv$series_baseline)
     )
   }
 
@@ -1702,44 +1731,29 @@ server <- function(input, output, session) {
   }
 
   edit_mode_label <- function(mode) {
-    if (identical(mode, "calibration")) "박스" else "포인트"
+    if (identical(mode, "point")) return("포인트")
+    if (identical(mode, "calibration")) return("박스")
+    stop("알 수 없는 편집 모드입니다: ", mode)
   }
 
-  edit_mode_changes_pending <- function(mode) {
-    if (identical(mode, "calibration")) {
-      isTRUE(rv$calibration_dirty)
-    } else {
-      point_changes_pending()
-    }
-  }
-
-  reset_edit_mode_baseline <- function(mode) {
-    if (identical(mode, "calibration")) {
-      rv$calibration_baseline <- rv$calibration
-      rv$calibration_undo <- NULL
-    } else {
-      rv$point_baseline_data <- rv$data
-      rv$series_baseline <- rv$series
-      rv$point_undo <- NULL
-    }
-    invisible()
+  active_mode_is <- function(mode) {
+    identical(rv$active_edit_mode, mode)
   }
 
   discard_edit_mode_changes <- function(mode) {
     if (identical(mode, "calibration")) {
       rv$calibration <- rv$calibration_baseline
-      rv$calibration_dirty <- FALSE
-      rv$calibration_undo <- NULL
-      rv$dirty <- point_changes_pending()
+      capture_mode_baseline("calibration")
       update_calibration_inputs()
-    } else {
+    } else if (identical(mode, "point")) {
       selected <- if (is.null(rv$selected)) 1L else rv$selected
       rv$data <- rv$point_baseline_data
       rv$series <- rv$series_baseline
-      rv$point_undo <- NULL
-      rv$dirty <- rv$calibration_dirty
+      capture_mode_baseline("point")
       set_add_mode(FALSE)
       refresh_controls(if (nrow(rv$data)) min(selected, nrow(rv$data)) else NULL)
+    } else {
+      stop("알 수 없는 편집 모드입니다: ", mode)
     }
     invisible()
   }
@@ -1759,7 +1773,7 @@ server <- function(input, output, session) {
 
   activate_edit_mode <- function(mode, update_input = FALSE) {
     rv$active_edit_mode <- mode
-    reset_edit_mode_baseline(mode)
+    capture_mode_baseline(mode)
     update_edit_mode_controls(mode)
     if (update_input) update_edit_mode_input(mode)
     invisible()
@@ -1823,15 +1837,9 @@ server <- function(input, output, session) {
     rv$calibration <- calibration
     rv$series <- series
     sort_points()
-    rv$point_baseline_data <- rv$data
-    rv$calibration_baseline <- calibration
-    rv$series_baseline <- series
+    capture_all_baselines()
     rv$pending_cancel_mode <- NULL
     rv$pending_edit_mode <- NULL
-    rv$dirty <- FALSE
-    rv$calibration_dirty <- FALSE
-    rv$point_undo <- NULL
-    rv$calibration_undo <- NULL
     rv$calibration_target <- NULL
     rv$calibration_point <- NULL
     set_add_mode(FALSE)
@@ -1866,7 +1874,7 @@ server <- function(input, output, session) {
     current_mode <- rv$active_edit_mode
     if (identical(requested_mode, current_mode)) return()
 
-    if (!edit_mode_changes_pending(current_mode)) {
+    if (!mode_changes_pending(current_mode)) {
       activate_edit_mode(requested_mode)
       rv$status <- ""
       return()
@@ -1920,8 +1928,6 @@ server <- function(input, output, session) {
     )
   })
 
-  mark_setting_changed <- function(status) mark_changed(status)
-
   observeEvent(input$setting_series, {
     update_series_inputs(input$setting_series)
     if (rv$add_mode && length(input$setting_series)) {
@@ -1974,7 +1980,7 @@ server <- function(input, output, session) {
       size = "그룹 심볼 크기가 변경되었습니다",
       alpha = "그룹 alpha가 변경되었습니다"
     )[[field]]
-    mark_setting_changed(status)
+    mark_mode_changed("point", status)
     refresh_series_choices(as.character(id))
     update_point_choices()
   }, ignoreInit = TRUE)
@@ -2169,15 +2175,14 @@ server <- function(input, output, session) {
     if (direction == "down") data$pixel_y[row] <- min(height, data$pixel_y[row] + step)
 
     rv$data <- data
-    mark_changed()
+    mark_mode_changed("point")
     update_point_label(row)
   }
 
   apply_calibration_change <- function(calibration, status) {
     remember_calibration_change()
     rv$calibration <- calibration
-    rv$calibration_dirty <- TRUE
-    mark_changed(status)
+    mark_mode_changed("calibration", status)
     refresh_point_choices()
     TRUE
   }
@@ -2297,7 +2302,7 @@ server <- function(input, output, session) {
   }
 
   move_target <- function(direction) {
-    if (identical(input$edit_mode, "calibration")) {
+    if (active_mode_is("calibration")) {
       if (identical(rv$calibration_target, "axis")) {
         move_axis_point(direction)
       } else {
@@ -2318,17 +2323,16 @@ server <- function(input, output, session) {
   observeEvent(input$calibration_down, move_target("down"))
 
   undo_target <- function() {
-    if (identical(input$edit_mode, "calibration")) {
+    if (active_mode_is("calibration")) {
       snapshot <- rv$calibration_undo
       if (is.null(snapshot) || !identical(snapshot$target, calibration_target_key())) {
         rv$status <- "선택한 보정 대상에 되돌릴 직전 변경이 없습니다"
         return()
       }
       rv$calibration <- snapshot$calibration
-      rv$dirty <- snapshot$dirty
       rv$calibration_dirty <- snapshot$calibration_dirty
       rv$calibration_undo <- NULL
-      rv$status <- if (rv$dirty) "저장되지 않은 변경" else ""
+      rv$status <- unsaved_status()
       update_calibration_inputs()
       refresh_point_choices()
       return()
@@ -2343,9 +2347,9 @@ server <- function(input, output, session) {
 
     rv$data <- snapshot$data
     rv$selected <- match(snapshot$point_id, rv$data$point_id)
-    rv$dirty <- snapshot$dirty
+    rv$point_dirty <- snapshot$point_dirty
     rv$point_undo <- NULL
-    rv$status <- if (rv$dirty) "저장되지 않은 변경" else ""
+    rv$status <- unsaved_status()
     refresh_controls(rv$selected)
   }
 
@@ -2356,7 +2360,7 @@ server <- function(input, output, session) {
     req(rv$dataset)
     cancel_mode <- rv$active_edit_mode
     mode_label <- edit_mode_label(cancel_mode)
-    has_changes <- edit_mode_changes_pending(cancel_mode)
+    has_changes <- mode_changes_pending(cancel_mode)
     if (!has_changes) {
       rv$status <- paste0("취소할 ", mode_label, " 변경이 없습니다")
       return()
@@ -2369,11 +2373,16 @@ server <- function(input, output, session) {
         " 변경만 취소하시겠습니까? 다른 모드의 변경은 유지됩니다."
       ),
       footer = tagList(
-        modalButton("아니오"),
+        actionButton("cancel_reload", "아니오"),
         actionButton("confirm_reload", "예", class = "btn-danger")
       ),
-      easyClose = TRUE
+      easyClose = FALSE
     ))
+  })
+
+  observeEvent(input$cancel_reload, {
+    removeModal()
+    rv$pending_cancel_mode <- NULL
   })
 
   observeEvent(input$confirm_reload, {
@@ -2381,7 +2390,6 @@ server <- function(input, output, session) {
     cancel_mode <- rv$pending_cancel_mode
     removeModal()
     discard_edit_mode_changes(cancel_mode)
-    reset_edit_mode_baseline(cancel_mode)
     rv$status <- paste0(edit_mode_label(cancel_mode), " 변경 취소됨")
     rv$pending_cancel_mode <- NULL
   })
@@ -2397,7 +2405,7 @@ server <- function(input, output, session) {
       set_add_mode(FALSE)
       sort_points(point_id)
       refresh_controls(rv$selected)
-      rv$status <- if (rv$dirty) "저장되지 않은 변경" else ""
+      rv$status <- unsaved_status()
     } else {
       set_add_mode(TRUE, input$setting_series)
       rv$status <- "원본 그림을 클릭하여 포인트를 연속으로 입력하세요"
@@ -2420,14 +2428,14 @@ server <- function(input, output, session) {
       NULL
     }
     sort_points(next_point_id)
-    mark_changed("포인트가 제거되었습니다")
+    mark_mode_changed("point", "포인트가 제거되었습니다")
     set_add_mode(FALSE)
     refresh_controls(rv$selected)
   }, ignoreInit = TRUE)
 
   observeEvent(input$overview_click, {
     req(rv$data)
-    if (identical(input$edit_mode, "calibration")) {
+    if (active_mode_is("calibration")) {
       req(rv$calibration$type == "projective")
       x <- round_pixel_coordinate(max(0, min(ncol(rv$image), input$overview_click$x)))
       y <- round_pixel_coordinate(max(0, min(nrow(rv$image), input$overview_click$y)))
@@ -2455,7 +2463,9 @@ server <- function(input, output, session) {
       )
       rv$data <- rbind(rv$data, new_row)
       rv$selected <- nrow(rv$data)
-      mark_changed("새 포인트가 추가되었습니다. 계속 입력하거나 입력 완료를 누르세요")
+      mark_mode_changed(
+        "point", "새 포인트가 추가되었습니다. 계속 입력하거나 입력 완료를 누르세요"
+      )
       refresh_controls(rv$selected)
       return()
     }
@@ -2520,24 +2530,24 @@ server <- function(input, output, session) {
     req(rv$data, rv$image)
     draw_plot_window(background = NA)
     selected_box_point <- if (
-      identical(input$edit_mode, "calibration") && identical(rv$calibration_target, "box")
+      active_mode_is("calibration") && identical(rv$calibration_target, "box")
     ) rv$calibration_point else NULL
     selected_axis_point <- if (
-      identical(input$edit_mode, "calibration") && identical(rv$calibration_target, "axis")
+      active_mode_is("calibration") && identical(rv$calibration_target, "axis")
     ) rv$calibration_point else NULL
     draw_calibration_grid(
       rv$calibration, selected_box_point, selected_axis_point,
-      box_only = !identical(input$edit_mode, "calibration")
+      box_only = !active_mode_is("calibration")
     )
     if (nrow(rv$data)) draw_series_points(seq_len(nrow(rv$data)))
-    if (!identical(input$edit_mode, "calibration") && !is.null(rv$selected)) {
+    if (!active_mode_is("calibration") && !is.null(rv$selected)) {
       draw_selected_point(rv$selected, cex = 1.5)
     }
   }, res = 110, bg = "transparent")
 
   selected_target <- reactive({
     req(rv$data, rv$image)
-    if (identical(input$edit_mode, "calibration")) {
+    if (active_mode_is("calibration")) {
       req(rv$calibration$type == "projective")
       if (identical(rv$calibration_target, "axis")) {
         req(rv$calibration_point)
@@ -2575,21 +2585,21 @@ server <- function(input, output, session) {
     ]
     rasterImage(crop, x_left, y_bottom, x_right, y_top)
     selected_box_point <- if (
-      identical(input$edit_mode, "calibration") && identical(rv$calibration_target, "box")
+      active_mode_is("calibration") && identical(rv$calibration_target, "box")
     ) rv$calibration_point else NULL
     selected_axis_point <- if (
-      identical(input$edit_mode, "calibration") && identical(rv$calibration_target, "axis")
+      active_mode_is("calibration") && identical(rv$calibration_target, "axis")
     ) rv$calibration_point else NULL
     draw_calibration_grid(
       rv$calibration, selected_box_point, selected_axis_point,
-      box_only = !identical(input$edit_mode, "calibration")
+      box_only = !active_mode_is("calibration")
     )
 
     nearby <- rv$data$pixel_x >= xlim[1] & rv$data$pixel_x <= xlim[2] &
       rv$data$pixel_y >= ylim[2] & rv$data$pixel_y <= ylim[1]
     nearby_rows <- which(nearby)
     draw_series_points(nearby_rows, cex = 1.15)
-    if (!identical(input$edit_mode, "calibration") && !is.null(rv$selected)) {
+    if (!active_mode_is("calibration") && !is.null(rv$selected)) {
       draw_selected_point(rv$selected, cex = 1.7)
     }
   }, res = 130)
@@ -2613,7 +2623,7 @@ server <- function(input, output, session) {
 
   output$point_values <- renderText({
     req(rv$data, rv$calibration)
-    if (identical(input$edit_mode, "calibration")) {
+    if (active_mode_is("calibration")) {
       req(rv$calibration$type == "projective")
       if (identical(rv$calibration_target, "box")) {
         req(rv$calibration_point)
@@ -2659,7 +2669,7 @@ server <- function(input, output, session) {
   })
 
   output$detail_title <- renderText({
-    if (!identical(input$edit_mode, "calibration")) {
+    if (!active_mode_is("calibration")) {
       if (is.null(rv$selected)) return("포인트 미선택")
       return("선택한 포인트")
     }
