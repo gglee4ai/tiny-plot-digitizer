@@ -378,7 +378,7 @@ rename_calibration_axis <- function(calibration, axis, new_name) {
   new_keys <- paste0(new_name, suffixes)
   conflicting_keys <- setdiff(new_keys, old_keys)
   if (any(conflicting_keys %in% names(calibration$box))) {
-    stop("같은 이름의 축 보정 메타데이터가 이미 있습니다.")
+    stop("같은 이름의 축 설정 정보가 이미 있습니다.")
   }
 
   box_names <- names(calibration$box)
@@ -710,13 +710,13 @@ series_from_metadata <- function(value) {
   if (is.null(value) || !length(value)) return(empty_series())
   item_names <- names(value)
   if (is.null(item_names) || any(!nzchar(item_names))) {
-    stop("display_styles 메타데이터의 그룹 명칭을 읽을 수 없습니다")
+    stop("CSV의 그룹 정보를 읽을 수 없습니다")
   }
   rows <- lapply(seq_along(value), function(index) {
     item <- value[[index]]
     required <- c("symbol", "color", "size", "alpha")
     if (!all(required %in% names(item))) {
-      stop("display_styles 메타데이터의 필드를 확인하세요")
+      stop("CSV의 그룹 표시 설정을 확인하세요")
     }
     data.frame(
       id = index,
@@ -741,7 +741,7 @@ yaml_quote <- function(value) {
 format_yaml_number <- function(value) {
   value <- as.numeric(value)
   if (length(value) != 1L || !is.finite(value)) {
-    stop("YAML 숫자가 유효하지 않습니다")
+    stop("CSV 설정 정보에 올바르지 않은 숫자가 있습니다")
   }
   format(value, scientific = FALSE, trim = TRUE, digits = 15)
 }
@@ -908,6 +908,17 @@ ui <- fluidPage(
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
       .movement-focus-target { outline: none; }
+      .editor-tabs > .tabbable > .tab-content { display: grid; }
+      .editor-tabs > .tabbable > .tab-content > .tab-pane {
+        display: block;
+        grid-area: 1 / 1;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .editor-tabs > .tabbable > .tab-content > .tab-pane.active {
+        visibility: visible;
+        pointer-events: auto;
+      }
       .group-section-title { margin: 3px 0 5px; font-weight: 600; }
       .movement-section-title { margin: 3px 0 5px; font-weight: 600; }
       .group-select-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 5px; align-items: center; margin-bottom: 6px; }
@@ -919,6 +930,7 @@ ui <- fluidPage(
       .symbol-swatch-frame { width: 34px; height: 34px; box-sizing: border-box; border: 1px solid #aaa; border-radius: 4px; overflow: hidden; background: white; }
       .symbol-swatch-frame .shiny-plot-output { width: 100% !important; height: 100% !important; }
       .calibration-setting-title { margin: 8px 0 5px; font-weight: 600; }
+      .calibration-point-group > .calibration-setting-title:first-child { margin-top: 3px; }
       .calibration-setting-table { margin-bottom: 9px; }
       .axis-name-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 12px; align-items: center; min-height: 30px; margin-bottom: 1px; }
       .axis-name-row > *, .axis-name-row .form-group { min-width: 0; }
@@ -967,7 +979,7 @@ ui <- fluidPage(
       .save-option-filename-box .form-group, .save-option-filename-box .shiny-input-container { width: 100% !important; max-width: none; margin: 0; }
       .save-option-filename-box input { width: 100%; height: 34px; padding: 4px 8px; }
       .save-option-filename-box input:disabled { background: #f3f3f3; color: #888; }
-      .point-values { min-height: 8.1em; margin: -2px 0 -3px; font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.35; }
+      .point-values { min-height: 10.8em; margin: -2px 0 -3px; font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.35; }
       .point-values .shiny-text-output { margin: 0; white-space: pre-wrap; }
       .plot-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
       .plot-stack { position: relative; height: calc(100vh - 82px); min-height: 420px; }
@@ -1061,6 +1073,14 @@ ui <- fluidPage(
           event.target.blur();
           return;
         }
+        var directions = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'};
+        if (directions[event.key]) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          var movementButton = document.getElementById(directions[event.key]);
+          if (movementButton) movementButton.click();
+          return;
+        }
         var activeElement = document.activeElement;
         var tag = activeElement && activeElement.tagName;
         var calibrationRadio = activeElement && activeElement.matches(
@@ -1071,32 +1091,36 @@ ui <- fluidPage(
           (activeElement && activeElement.isContentEditable)
         );
         if (editingField) return;
-        if (event.key === '[' || (event.shiftKey && event.key === 'ArrowLeft')) {
+        var activeEditMode = document.querySelector(
+          '.editor-tabs .nav-tabs li.active a'
+        );
+        var pointModeActive = activeEditMode &&
+          activeEditMode.getAttribute('data-value') === 'point';
+        if (event.key === '[') {
+          if (!pointModeActive) return;
           event.preventDefault();
           Shiny.setInputValue('key_point_nav', 'previous', {priority: 'event'});
           return;
         }
-        if (event.key === ']' || (event.shiftKey && event.key === 'ArrowRight')) {
+        if (event.key === ']') {
+          if (!pointModeActive) return;
           event.preventDefault();
           Shiny.setInputValue('key_point_nav', 'next', {priority: 'event'});
           return;
         }
-        var directions = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'};
-        if (directions[event.key]) {
-          event.preventDefault();
-          var movementButton = document.getElementById(directions[event.key]);
-          if (movementButton) movementButton.click();
-        }
-      });
+      }, true);
 
       function focusActiveMovementTarget() {
         window.setTimeout(function() {
-          var movementControls = document.querySelector(
-            '.editor-tabs .tab-pane.active .movement-focus-target'
-          );
+          var movementControls = document.getElementById('movement_controls');
           if (movementControls) movementControls.focus({preventScroll: true});
         }, 0);
       }
+
+      document.addEventListener('click', function(event) {
+        if (!event.target.closest('.editor-tabs .nav-tabs a')) return;
+        focusActiveMovementTarget();
+      });
 
       document.addEventListener('change', function(event) {
         if (!event.target.matches('input[type=radio], #point, #move_step, #zoom')) return;
@@ -1285,26 +1309,7 @@ ui <- fluidPage(
                 actionButton("next_point", "다음 ]", title = "다음 포인트 (])"),
                 actionButton("delete_point", "제거", title = "선택한 포인트 제거")
               ),
-              div(class = "point-values", textOutput("point_values")),
-              tags$hr(class = "panel-divider"),
-              div(class = "movement-section-title", "포인트 이동"),
-              div(
-                id = "movement_controls",
-                class = "move-button-row movement-focus-target",
-                tabindex = "-1",
-                actionButton("left", "←", title = "왼쪽으로 이동"),
-                actionButton("down", "↓", title = "아래로 이동"),
-                actionButton("up", "↑", title = "위로 이동"),
-                actionButton("right", "→", title = "오른쪽으로 이동"),
-                actionButton("undo", "↺", title = "선택한 대상의 직전 변경만 되돌리기")
-              ),
-              div(
-                class = "move-point-option move-step-option",
-                radioButtons(
-                  "move_step", "이동 간격", choices = c(0.5, 1, 5, 10),
-                  selected = 0.5, inline = TRUE, width = "100%"
-                )
-              )
+              div(class = "point-values", textOutput("point_values"))
             ),
             tabPanel(
               title = "좌표설정", value = "calibration",
@@ -1430,29 +1435,27 @@ ui <- fluidPage(
                   })
                 )
               )
-              ),
-              tags$hr(class = "panel-divider"),
-              div(class = "movement-section-title", "포인트 이동"),
-              div(
-                id = "calibration_movement_controls",
-                class = "move-button-row calibration-move-button-row",
-                actionButton("calibration_left", "←", title = "왼쪽으로 이동"),
-                actionButton("calibration_down", "↓", title = "아래로 이동"),
-                actionButton("calibration_up", "↑", title = "위로 이동"),
-                actionButton("calibration_right", "→", title = "오른쪽으로 이동"),
-                actionButton(
-                  "calibration_undo", "↺",
-                  title = "선택한 설정 포인트의 직전 변경만 되돌리기"
-                )
-              ),
-              div(
-                class = "move-point-option move-step-option",
-                radioButtons(
-                  "calibration_move_step", "이동 간격", choices = c(0.5, 1, 5, 10),
-                  selected = 0.5, inline = TRUE, width = "100%"
-                )
               )
             )
+          )
+        ),
+        tags$hr(class = "panel-divider"),
+        div(class = "movement-section-title", "포인트 이동"),
+        div(
+          id = "movement_controls",
+          class = "move-button-row movement-focus-target",
+          tabindex = "-1",
+          actionButton("left", "←", title = "왼쪽으로 이동"),
+          actionButton("down", "↓", title = "아래로 이동"),
+          actionButton("up", "↑", title = "위로 이동"),
+          actionButton("right", "→", title = "오른쪽으로 이동"),
+          actionButton("undo", "↺", title = "선택한 대상의 직전 변경만 되돌리기")
+        ),
+        div(
+          class = "move-point-option move-step-option",
+          radioButtons(
+            "move_step", "이동 간격", choices = c(0.5, 1, 5, 10),
+            selected = 0.5, inline = TRUE, width = "100%"
           )
         ),
         div(
@@ -1833,7 +1836,7 @@ server <- function(input, output, session) {
     if (!length(images)) {
       showModal(modalDialog(
         title = "신규 CSV 파일 제작",
-        "현재 작업 폴더에 PNG 파일이 없습니다.",
+        "현재 작업 폴더에 PNG 이미지가 없습니다.",
         footer = modalButton("닫기"),
         easyClose = TRUE
       ))
@@ -1843,7 +1846,7 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       title = "신규 CSV 파일 제작",
       selectInput(
-        "new_project_image", "그림 파일 선택",
+        "new_project_image", "이미지 파일 선택",
         choices = setNames(names(images), labels), selectize = FALSE,
         width = "100%"
       ),
@@ -2100,7 +2103,7 @@ server <- function(input, output, session) {
 
   edit_mode_label <- function(mode) {
     if (identical(mode, "point")) return("포인트")
-    if (identical(mode, "calibration")) return("박스")
+    if (identical(mode, "calibration")) return("좌표설정")
     stop("알 수 없는 편집 모드입니다: ", mode)
   }
 
@@ -2165,18 +2168,18 @@ server <- function(input, output, session) {
       source_metadata <- source_image_metadata(metadata)
       if (is.null(source_metadata) ||
           !identical(source_metadata$filename, basename(dataset$source_path))) {
-        stop("원본 이미지 정보를 읽을 수 없습니다: ", project_path)
+        stop("CSV에서 원본 이미지 정보를 읽을 수 없습니다: ", project_path)
       }
       if (source_metadata$width != image_width || source_metadata$height != image_height) {
         stop(sprintf(
-          "원본 이미지 크기가 프로젝트와 다릅니다: 저장 %dx%d, 현재 %dx%d",
+          "원본 이미지 크기가 CSV에 저장된 정보와 다릅니다: 저장 %dx%d, 현재 %dx%d",
           source_metadata$width, source_metadata$height, image_width, image_height
         ))
       }
       saved_data <- read.csv(project_path, comment.char = "#", check.names = FALSE)
       required <- c("group", "pixel_x", "pixel_y")
       if (!all(required %in% names(saved_data))) {
-        stop("독립 프로젝트 형식이 아닌 CSV입니다: ", project_path)
+        stop("Tiny Plot Digitizer 형식의 CSV가 아닙니다: ", project_path)
       }
       saved_calibration <- parse_projective_calibration(metadata, names(saved_data))
       if (is.null(saved_calibration)) {
@@ -2186,7 +2189,7 @@ server <- function(input, output, session) {
       data <- saved_data[required]
       group_rows <- match(as.character(data$group), persisted_series$name)
       if (anyNA(group_rows)) {
-        stop("CSV의 그룹 명칭을 display_styles 메타데이터에서 찾을 수 없습니다")
+        stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
       }
       data$group <- persisted_series$id[group_rows]
       names(data)[names(data) == "group"] <- "series_id"
@@ -2199,9 +2202,9 @@ server <- function(input, output, session) {
       data$series_id <- as.integer(data$series_id)
       data$pixel_x <- as.numeric(data$pixel_x)
       data$pixel_y <- as.numeric(data$pixel_y)
-      if (anyDuplicated(data$point_id)) stop("point_id가 중복되어 있습니다")
+      if (anyDuplicated(data$point_id)) stop("포인트 번호가 중복되어 있습니다")
       if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
-        stop("display_styles 메타데이터에 없는 그룹을 사용하는 포인트가 있습니다")
+        stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
       }
       saved_series <- restore_default_groups(persisted_series)
       calibration <- saved_calibration
@@ -2230,9 +2233,9 @@ server <- function(input, output, session) {
     }
     rv$status <- if (is.null(rv$pending_switch_status)) {
       if (loaded_project) {
-        paste("파일 불러옴:", basename(project_path))
+        paste("CSV 불러옴:", basename(project_path))
       } else {
-        "새 디지타이징 프로젝트"
+        "신규 CSV 파일 작성 중"
       }
     } else {
       rv$pending_switch_status
@@ -2288,7 +2291,7 @@ server <- function(input, output, session) {
     current_label <- edit_mode_label(current_mode)
     showModal(modalDialog(
       title = paste0(current_label, " 변경사항"),
-      paste0(current_label, " 모드의 변경사항을 저장하시겠습니까?"),
+      paste0(current_label, " 변경사항을 저장하시겠습니까?"),
       footer = tagList(
         actionButton("cancel_mode_switch", "전환 취소"),
         actionButton("discard_mode_switch", "저장하지 않음"),
@@ -2311,9 +2314,10 @@ server <- function(input, output, session) {
     removeModal()
     rv$pending_edit_mode <- NULL
     activate_edit_mode(next_mode, update_input = TRUE)
+    next_label <- if (identical(next_mode, "point")) "포인트로" else "좌표설정으로"
     rv$status <- paste0(
-      edit_mode_label(current_mode), " 변경을 취소하고 ",
-      edit_mode_label(next_mode), " 모드로 전환했습니다"
+      edit_mode_label(current_mode), " 변경사항을 저장하지 않고 ",
+      next_label, " 전환했습니다"
     )
   })
 
@@ -2325,9 +2329,10 @@ server <- function(input, output, session) {
     removeModal()
     rv$pending_edit_mode <- NULL
     activate_edit_mode(next_mode, update_input = TRUE)
+    next_label <- if (identical(next_mode, "point")) "포인트로" else "좌표설정으로"
     rv$status <- paste0(
-      edit_mode_label(current_mode), " 변경을 저장하고 ",
-      edit_mode_label(next_mode), " 모드로 전환했습니다"
+      edit_mode_label(current_mode), " 변경사항을 저장하고 ",
+      next_label, " 전환했습니다"
     )
   })
 
@@ -2571,7 +2576,7 @@ server <- function(input, output, session) {
     calibration <- rebuild_calibration_ranges(calibration)
     if (is.null(calibration)) {
       updateRadioButtons(session, paste0(axis, "_axis_scale"), selected = current_scale)
-      rv$status <- "축 값과 위치를 확인하세요"
+      rv$status <- "축 값과 픽셀 위치를 확인하세요"
       return()
     }
     apply_calibration_change(
@@ -2595,7 +2600,7 @@ server <- function(input, output, session) {
     calibration <- rebuild_calibration_ranges(calibration)
     if (is.null(calibration)) {
       updateRadioButtons(session, paste0(axis, "_axis_position"), selected = current_position)
-      rv$status <- "축 값과 위치를 확인하세요"
+      rv$status <- "축 값과 픽셀 위치를 확인하세요"
       return()
     }
     position_label <- if (axis == "x") {
@@ -2654,7 +2659,7 @@ server <- function(input, output, session) {
     value <- suppressWarnings(as.numeric(input$axis_pixel_commit$value))
     if (!is.finite(value)) {
       updateNumericInput(session, pixel_input, value = current_value)
-      rv$status <- paste0(toupper(point_name), " 픽셀 위치에 정수를 입력하세요")
+      rv$status <- paste0(toupper(point_name), " 픽셀 위치에 숫자를 입력하세요")
       return()
     }
     value <- round_pixel_coordinate(value)
@@ -2669,7 +2674,7 @@ server <- function(input, output, session) {
     fraction <- (value - edge$start[coordinate_index]) / edge_extent
     if (!is.finite(fraction) || fraction < 0 || fraction > 1) {
       updateNumericInput(session, pixel_input, value = current_value)
-      rv$status <- "축 포인트의 픽셀 위치는 박스 축 범위 안에 있어야 합니다"
+      rv$status <- "축 설정점은 박스 설정 범위 안에 있어야 합니다"
       return()
     }
     calibration$axis_points[[point_name]]$source <- "new"
@@ -2680,7 +2685,7 @@ server <- function(input, output, session) {
       rv$status <- "X1/X2 또는 Y1/Y2의 픽셀 위치 순서를 확인하세요"
       return()
     }
-    apply_calibration_change(calibration, "축 포인트의 픽셀 위치가 변경되었습니다")
+    apply_calibration_change(calibration, "축 설정점의 픽셀 위치가 변경되었습니다")
     update_calibration_inputs()
   }, ignoreInit = TRUE)
 
@@ -2730,7 +2735,7 @@ server <- function(input, output, session) {
       rv$status <- "X1은 X2보다, Y1은 Y2보다 작은 값이어야 합니다"
       return()
     }
-    apply_calibration_change(calibration, "축 포인트 값이 변경되었습니다")
+    apply_calibration_change(calibration, "축 설정점의 값이 변경되었습니다")
     update_calibration_inputs()
   }, ignoreInit = TRUE)
 
@@ -2767,7 +2772,10 @@ server <- function(input, output, session) {
 
   observeEvent(input$previous_point, navigate_point("previous"), ignoreInit = TRUE)
   observeEvent(input$next_point, navigate_point("next"), ignoreInit = TRUE)
-  observeEvent(input$key_point_nav, navigate_point(input$key_point_nav))
+  observeEvent(input$key_point_nav, {
+    if (!active_mode_is("point")) return()
+    navigate_point(input$key_point_nav)
+  })
 
   observeEvent(input$point, {
     req(rv$data, input$point)
@@ -2820,15 +2828,15 @@ server <- function(input, output, session) {
     calibration$box[[box_point]]$pixel_x <- pixel_x
     calibration$box[[box_point]]$pixel_y <- pixel_y
     if (is.null(calibration) || !valid_projective_calibration(calibration)) {
-      rv$status <- "네 모서리가 교차하지 않는 박스가 되도록 지정하세요"
+      rv$status <- "네 모서리가 교차하지 않도록 박스를 설정하세요"
       return(FALSE)
     }
     calibration <- rebuild_calibration_ranges(calibration)
     if (is.null(calibration)) {
-      rv$status <- "축 포인트의 위치와 값을 확인하세요"
+      rv$status <- "축 설정점의 위치와 값을 확인하세요"
       return(FALSE)
     }
-    changed <- apply_calibration_change(calibration, "보정 박스가 변경되었습니다")
+    changed <- apply_calibration_change(calibration, "박스 설정이 변경되었습니다")
     update_calibration_inputs()
     changed
   }
@@ -2870,7 +2878,7 @@ server <- function(input, output, session) {
       update_calibration_inputs()
       return(FALSE)
     }
-    changed <- apply_calibration_change(calibration, "축 포인트가 변경되었습니다")
+    changed <- apply_calibration_change(calibration, "축 설정점이 변경되었습니다")
     update_calibration_inputs()
     changed
   }
@@ -2882,7 +2890,7 @@ server <- function(input, output, session) {
     )
     axis_point <- rv$calibration_point
     point <- rv$calibration$axis_points[[axis_point]]
-    step <- as.numeric(input$calibration_move_step)
+    step <- as.numeric(input$move_step)
     edge <- axis_edge(rv$calibration, axis_point)
     if (startsWith(axis_point, "x")) {
       if (!direction %in% c("left", "right")) return()
@@ -2906,7 +2914,7 @@ server <- function(input, output, session) {
       identical(rv$calibration_target, "box"), rv$calibration_point
     )
     point <- rv$calibration$box[[rv$calibration_point]]
-    step <- as.numeric(input$calibration_move_step)
+    step <- as.numeric(input$move_step)
     pixel_x <- as.numeric(point$pixel_x)
     pixel_y <- as.numeric(point$pixel_y)
     if (direction == "left") pixel_x <- max(0, pixel_x - step)
@@ -2932,16 +2940,12 @@ server <- function(input, output, session) {
   observeEvent(input$right, move_target("right"))
   observeEvent(input$up, move_target("up"))
   observeEvent(input$down, move_target("down"))
-  observeEvent(input$calibration_left, move_target("left"))
-  observeEvent(input$calibration_right, move_target("right"))
-  observeEvent(input$calibration_up, move_target("up"))
-  observeEvent(input$calibration_down, move_target("down"))
 
   undo_target <- function() {
     if (active_mode_is("calibration")) {
       snapshot <- rv$calibration_undo
       if (is.null(snapshot) || !identical(snapshot$target, calibration_target_key())) {
-        rv$status <- "선택한 보정 대상에 되돌릴 직전 변경이 없습니다"
+        rv$status <- "선택한 설정점에 되돌릴 변경이 없습니다"
         return()
       }
       rv$calibration <- snapshot$calibration
@@ -2969,7 +2973,6 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$undo, undo_target())
-  observeEvent(input$calibration_undo, undo_target())
 
   restore_file_snapshot <- function(snapshot, status) {
     req(rv$dataset, rv$dataset$load_path, !is.null(snapshot))
@@ -3067,7 +3070,7 @@ server <- function(input, output, session) {
       rv$status <- unsaved_status()
     } else {
       set_add_mode(TRUE, input$setting_series)
-      rv$status <- "원본 그림을 클릭하여 포인트를 연속으로 입력하세요"
+      rv$status <- "원본 이미지를 클릭하여 포인트를 연속으로 입력하세요"
     }
   }
 
@@ -3305,8 +3308,8 @@ server <- function(input, output, session) {
       if (is.null(rv$selected)) return("포인트 미선택")
       return("선택한 포인트")
     }
-    if (is.null(rv$calibration_target)) return("설정 포인트 미선택")
-    if (identical(rv$calibration_target, "box")) "선택한 박스 포인트" else "선택한 축 포인트"
+    if (is.null(rv$calibration_target)) return("설정점 미선택")
+    if (identical(rv$calibration_target, "box")) "선택한 박스 설정점" else "선택한 축 설정점"
   })
 
   output$save_name_resolved_box <- renderUI({
@@ -3369,7 +3372,7 @@ server <- function(input, output, session) {
         div(
           class = "save-option-file-info",
           div(
-            span(class = "save-option-label", "그림 파일:"),
+            span(class = "save-option-label", "원본 이미지:"),
             span(basename(rv$dataset$source_path))
           ),
           div(
