@@ -795,7 +795,6 @@ ui <- fluidPage(
       .status-line, .point-values, .status-line .shiny-text-output, .point-values .shiny-text-output { max-width: 100%; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
       .save-name-options .form-group { margin: 8px 0 5px; }
       .save-name-options .control-label { font-weight: 600; }
-      .point-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
       .compact-control-row { display: grid; gap: 5px; align-items: center; margin-bottom: 9px; }
       .compact-control-row > *, .compact-control-row .shiny-input-container { min-width: 0; }
       .compact-control-row .shiny-input-container { width: 100% !important; margin: 0; }
@@ -803,8 +802,8 @@ ui <- fluidPage(
       .compact-control-row input, .compact-control-row select { height: 34px; padding: 4px 6px; }
       .point-section-title { display: block; margin: 3px 0 5px; font-weight: 600; }
       .point-select-input .shiny-input-container { width: 100% !important; margin-bottom: 6px; }
-      .point-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
-      .point-action-row .btn { width: 100%; height: 34px; padding: 5px; border-radius: 4px; }
+      .point-action-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+      .point-action-row .btn { width: 100%; height: 34px; padding: 5px 2px; border-radius: 4px; font-size: 12px; }
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
       .movement-focus-target { outline: none; }
@@ -1180,16 +1179,11 @@ ui <- fluidPage(
               ),
               div(
                 class = "point-action-row",
-                actionButton("add_point", "연속 입력",
+                actionButton("add_point", "포인트 연속입력",
                              title = "선택한 그룹에 포인트 연속 입력 시작"),
-                actionButton(
-                  "delete_point", "현재포인트 제거", title = "선택한 포인트 제거"
-                )
-              ),
-              div(
-                class = "point-nav",
                 actionButton("previous_point", "이전 [", title = "이전 포인트 ([)"),
-                actionButton("next_point", "다음 ]", title = "다음 포인트 (])")
+                actionButton("next_point", "다음 ]", title = "다음 포인트 (])"),
+                actionButton("delete_point", "제거", title = "선택한 포인트 제거")
               ),
               div(
                 id = "movement_controls",
@@ -1937,7 +1931,7 @@ server <- function(input, output, session) {
     rv$add_series <- if (active) as.integer(series) else NULL
     updateActionButton(
       session, "add_point",
-      label = if (active) "입력 완료" else "연속 입력",
+      label = if (active) "연속입력 종료" else "포인트 연속입력",
       icon = NULL
     )
     session$sendCustomMessage("set-add-mode-state", list(active = isTRUE(active)))
@@ -2761,7 +2755,7 @@ server <- function(input, output, session) {
       rv$data <- rbind(rv$data, new_row)
       rv$selected <- nrow(rv$data)
       mark_mode_changed(
-        "point", "새 포인트가 추가되었습니다. 계속 입력하거나 입력 완료를 누르세요"
+        "point", "새 포인트가 추가되었습니다. 계속 입력하거나 연속입력 종료를 누르세요"
       )
       refresh_controls(rv$selected)
       return()
