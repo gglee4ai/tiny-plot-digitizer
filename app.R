@@ -1,15 +1,80 @@
+required_packages <- c("shiny", "shinyFiles", "png", "yaml")
+missing_packages <- required_packages[!vapply(
+  required_packages, requireNamespace, logical(1), quietly = TRUE
+)]
+if (length(missing_packages)) {
+  stop(
+    paste0(
+      "필요한 R 패키지가 없습니다: ", paste(missing_packages, collapse = ", "),
+      "\n다음 명령으로 설치하세요:\ninstall.packages(c(",
+      paste(sprintf("%s", encodeString(missing_packages, quote = '"')), collapse = ", "),
+      "))"
+    ),
+    call. = FALSE
+  )
+}
+
 library(shiny)
 
-app_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
-app_dir <- getOption("digitization.point.editor.app_dir")
-if (is.null(app_dir) && !is.null(app_file)) app_dir <- dirname(normalizePath(app_file))
-if (is.null(app_dir) && file.exists(file.path(getwd(), "tools/digitization-point-editor/app.R"))) {
-  app_dir <- normalizePath(file.path(getwd(), "tools/digitization-point-editor"))
+read_csv_metadata <- function(path) {
+  lines <- readLines(path, warn = FALSE)
+  yaml_delimiters <- which(trimws(lines) == "# ---")
+  if (length(yaml_delimiters) < 2L) return(list())
+
+  yaml_start <- yaml_delimiters[1] + 1L
+  yaml_end <- yaml_delimiters[2] - 1L
+  if (yaml_start > yaml_end) return(list())
+
+  yaml_lines <- sub("^# ?", "", lines[yaml_start:yaml_end])
+  yaml_text <- paste(yaml_lines, collapse = "\n")
+  if (!nzchar(trimws(yaml_text))) return(list())
+  yaml::yaml.load(yaml_text)
 }
-if (is.null(app_dir)) app_dir <- normalizePath(getwd())
-repo_dir <- normalizePath(file.path(app_dir, "../.."))
-data_raw_dir <- file.path(repo_dir, "data-raw")
-source(file.path(data_raw_dir, "01_build-helpers.R"))
+
+project_pixels_to_unit <- function(pixel_x, pixel_y, calibration_box) {
+  if (length(pixel_x) != length(pixel_y)) {
+    stop("pixel_x와 pixel_y의 길이가 서로 다릅니다", call. = FALSE)
+  }
+
+  corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
+  if (!all(corner_names %in% names(calibration_box))) {
+    stop("박스 설정에 네 모서리 좌표가 필요합니다", call. = FALSE)
+  }
+
+  pixel_corners <- t(vapply(
+    corner_names,
+    function(corner) {
+      c(
+        pixel_x = as.numeric(calibration_box[[corner]]$pixel_x),
+        pixel_y = as.numeric(calibration_box[[corner]]$pixel_y)
+      )
+    },
+    numeric(2)
+  ))
+  unit_corners <- rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1))
+  projective_matrix <- matrix(0, nrow = 8, ncol = 8)
+  projective_target <- as.vector(t(unit_corners))
+
+  for (index in seq_len(4)) {
+    x <- pixel_corners[index, 1]
+    y <- pixel_corners[index, 2]
+    u <- unit_corners[index, 1]
+    v <- unit_corners[index, 2]
+    projective_matrix[2 * index - 1, ] <- c(x, y, 1, 0, 0, 0, -u * x, -u * y)
+    projective_matrix[2 * index, ] <- c(0, 0, 0, x, y, 1, -v * x, -v * y)
+  }
+
+  projective <- solve(projective_matrix, projective_target)
+  denominator <- projective[7] * pixel_x + projective[8] * pixel_y + 1
+  data.frame(
+    x_fraction = (
+      projective[1] * pixel_x + projective[2] * pixel_y + projective[3]
+    ) / denominator,
+    y_fraction = (
+      projective[4] * pixel_x + projective[5] * pixel_y + projective[6]
+    ) / denominator
+  )
+}
 
 round_pixel_coordinate <- function(value) {
   round(suppressWarnings(as.numeric(value)) * 2) / 2
@@ -1493,10 +1558,18 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  initial_folder <- normalizePath(
-    file.path(data_raw_dir, "2004_MRP79R1"), mustWork = TRUE
-  )
   home_dir <- normalizePath("~", mustWork = TRUE)
+  configured_folder <- trimws(Sys.getenv("DIGITIZER_FOLDER", ""))
+  initial_folder <- if (nzchar(configured_folder) && dir.exists(path.expand(configured_folder))) {
+    normalizePath(path.expand(configured_folder), mustWork = TRUE)
+  } else {
+    home_dir
+  }
+  home_prefix <- paste0(home_dir, .Platform$file.sep)
+  if (!identical(initial_folder, home_dir) && !startsWith(initial_folder, home_prefix)) {
+    warning("DIGITIZER_FOLDER는 홈 폴더 안의 경로만 지정할 수 있습니다. 홈 폴더에서 시작합니다.")
+    initial_folder <- home_dir
+  }
   selected_folder <- reactiveVal(initial_folder)
   folder_roots <- c("홈" = home_dir)
   catalog <- reactiveVal(list())
@@ -1643,11 +1716,11 @@ server <- function(input, output, session) {
     )
   }
 
-  relative_repo_path <- function(path) {
+  display_path <- function(path) {
     normalized <- normalizePath(path, mustWork = FALSE)
-    prefix <- paste0(normalizePath(repo_dir), .Platform$file.sep)
-    if (startsWith(normalized, prefix)) {
-      return(substring(normalized, nchar(prefix) + 1L))
+    if (identical(normalized, home_dir)) return("~")
+    if (startsWith(normalized, home_prefix)) {
+      return(file.path("~", substring(normalized, nchar(home_prefix) + 1L)))
     }
     normalized
   }
@@ -1739,7 +1812,7 @@ server <- function(input, output, session) {
     capture_all_baselines()
 
     prefix <- if (auto) "자동 저장됨:" else "저장됨:"
-    message <- paste(prefix, relative_repo_path(save_path))
+    message <- paste(prefix, display_path(save_path))
     if (auto) {
       rv$pending_switch_status <- message
     } else {
