@@ -19,7 +19,7 @@ format_pixel_coordinate <- function(value) {
   format(round_pixel_coordinate(value), scientific = FALSE, trim = TRUE)
 }
 
-project_format <- "Tiny Plot Digitizer 1.0"
+project_format <- "Tiny Plot Digitizer 2026.07"
 
 parse_projective_calibration <- function(metadata, columns) {
   if (!identical(as.character(metadata$format), project_format)) return(NULL)
@@ -862,11 +862,14 @@ box_point_display_labels <- c(
 
 ui <- fluidPage(
   tags$head(
-    tags$title("Tiny Plot Digitizer 1.0"),
+    tags$title("Tiny Plot Digitizer"),
     tags$style(HTML("
       body { background: #f7f7f5; color: #202124; }
       .container-fluid { padding: 12px 18px; }
-      h3 { margin: 0 0 12px; font-size: 20px; font-weight: 600; }
+      .app-header { margin: 0 0 10px; }
+      .app-title { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.2; }
+      .app-subtitle { margin-top: 1px; text-align: right; font-size: 14px; line-height: 1.35; color: #555; }
+      .app-version { text-align: right; font-size: 12px; line-height: 1.35; color: #777; }
       h4 { margin: 12px 0 8px; font-size: 14px; font-weight: 600; }
       .editor-layout { display: grid; grid-template-columns: 300px minmax(0, 2fr) minmax(280px, 1fr); margin: 0; }
       .editor-layout::before, .editor-layout::after { display: none; }
@@ -1204,7 +1207,6 @@ ui <- fluidPage(
       folderModalObserver.observe(document.documentElement, {childList: true, subtree: true});
     "))
   ),
-  h3("Tiny Plot Digitizer 1.0"),
   fluidRow(
     class = "editor-layout",
     column(
@@ -1212,6 +1214,12 @@ ui <- fluidPage(
       class = "editor-column control-column",
       div(
         class = "control-panel",
+        div(
+          class = "app-header",
+          h3(class = "app-title", "Tiny Plot Digitizer"),
+          div(class = "app-subtitle", "A simple plot digitizing tool"),
+          div(class = "app-version", "Vers. 2026.07")
+        ),
         div(
           class = "project-source-group",
           div(class = "project-source-title", "작업 폴더"),
