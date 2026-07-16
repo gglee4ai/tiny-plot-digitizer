@@ -594,33 +594,46 @@ new_project_calibration <- function(width, height) {
   )
 }
 
-pch_names <- c(
-  "빈 사각형", "빈 원", "빈 위삼각형", "십자 (+)", "엑스 (×)", "빈 마름모",
-  "빈 아래삼각형", "사각형+엑스", "별표", "마름모+십자",
-  "원+십자", "위·아래삼각형", "사각형+십자", "원+엑스",
-  "사각형+삼각형", "채운 사각형", "채운 원", "채운 위삼각형", "채운 마름모"
-)
-series_marker_choices <- setNames(
-  as.character(0:18),
-  pch_names
+series_marker_choices <- c(
+  "+ 십자" = "3",
+  "× 엑스" = "4",
+  "○ 원" = "1",
+  "□ 사각형" = "0",
+  "◇ 마름모" = "5"
 )
 
 group_color_choices <- c(
-  "검정" = "#000000", "파랑" = "#1f77b4", "빨강" = "#d62728",
-  "초록" = "#2ca02c", "보라" = "#9467bd", "주황" = "#ff7f0e",
-  "청록" = "#17becf", "갈색" = "#8c564b", "분홍" = "#e377c2",
-  "회색" = "#7f7f7f"
+  "빨강" = "#d62728",
+  "파랑" = "#1f77b4",
+  "초록" = "#2ca02c",
+  "주황" = "#ff7f0e",
+  "보라" = "#9467bd",
+  "청록" = "#17becf"
 )
 series_palette <- unname(group_color_choices)
 
+group_style_defaults <- function(id) {
+  combination <- (as.integer(id) - 1L) %%
+    (length(series_palette) * length(series_marker_choices))
+  color_index <- combination %% length(series_palette) + 1L
+  marker_index <- combination %/% length(series_palette) + 1L
+  list(
+    marker = unname(series_marker_choices[marker_index]),
+    color = series_palette[color_index],
+    size = 1,
+    alpha = 1
+  )
+}
+
 default_groups <- function() {
+  style <- group_style_defaults(1L)
   data.frame(
-    id = seq_len(10L),
-    name = sprintf("group%02d", seq_len(10L)),
-    marker = rep("3", 10L),
-    color = rep(unname(group_color_choices["빨강"]), 10L),
-    size = rep(1, 10L),
-    alpha = rep(1, 10L),
+    id = 1L,
+    name = "group01",
+    marker = style$marker,
+    color = style$color,
+    size = style$size,
+    alpha = style$alpha,
     stringsAsFactors = FALSE
   )
 }
@@ -807,21 +820,14 @@ ui <- fluidPage(
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
       .movement-focus-target { outline: none; }
-      .group-control-row { grid-template-columns: 65px minmax(0, 1fr); }
       .group-section-title { margin: 3px 0 5px; font-weight: 600; }
-      .group-select-input .shiny-input-container { width: 100% !important; margin-bottom: 9px; }
+      .movement-section-title { margin: 3px 0 5px; font-weight: 600; }
+      .group-select-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 5px; align-items: center; margin-bottom: 6px; }
+      .group-select-row > *, .group-select-row .shiny-input-container { min-width: 0; }
+      .group-select-input .shiny-input-container { width: 100% !important; margin: 0; }
       .panel-divider { margin: 3px 0 8px; border: 0; border-top: 1px solid #d8d8d4; }
-      .symbol-preview-row { display: grid; grid-template-columns: 65px 34px minmax(0, 1fr); gap: 5px; align-items: center; margin-bottom: 7px; }
-      .symbol-preview-row > span, .group-style-pair-row > label { font-weight: 400; white-space: nowrap; }
-      .symbol-preview-row > *, .symbol-preview-row .shiny-input-container { min-width: 0; }
-      .symbol-preview-row .compact-style-field .shiny-input-container { width: 100% !important; margin: 0; }
-      .symbol-preview-row select { width: 100%; height: 34px; min-width: 0; padding: 4px 6px; }
-      .group-style-pair-row { display: grid; gap: 5px; align-items: center; margin-bottom: 7px; }
-      .group-style-properties-row { grid-template-columns: 70px 28px 60px 28px 60px; }
-      .group-style-pair-row > *, .group-style-pair-row .shiny-input-container { min-width: 0; }
-      .group-style-pair-row > label { margin: 0; }
-      .group-style-pair-row .compact-style-field .shiny-input-container { width: 100% !important; margin: 0; }
-      .group-style-pair-row input, .group-style-pair-row select { width: 100%; height: 34px; min-width: 0; padding: 4px 6px; }
+      .group-action-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 7px; }
+      .group-action-row .btn { width: 100%; height: 34px; padding: 5px 2px; border-radius: 4px; font-size: 12px; }
       .symbol-swatch-frame { width: 34px; height: 34px; box-sizing: border-box; border: 1px solid #aaa; border-radius: 4px; overflow: hidden; background: white; }
       .symbol-swatch-frame .shiny-plot-output { width: 100% !important; height: 100% !important; }
       .calibration-axis-name-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; margin-bottom: 8px; }
@@ -906,50 +912,13 @@ ui <- fluidPage(
         if (button) button.classList.toggle('add-mode-active', Boolean(message.active));
       });
 
-      var activeSeriesEditorId = null;
-
-      Shiny.addCustomMessageHandler('update-series-editor', function(message) {
-        var nameInput = document.getElementById('series_name');
-        var markerInput = document.getElementById('series_marker');
-        var sizeInput = document.getElementById('series_size');
-        var colorInput = document.getElementById('series_color');
-        var alphaInput = document.getElementById('series_alpha');
-        activeSeriesEditorId = Number(message.id) || null;
-        if (nameInput) nameInput.value = message.name || '';
-        if (markerInput) markerInput.value = message.marker || '3';
-        if (sizeInput) sizeInput.value = message.size == null ? 1 : message.size;
-        if (colorInput) colorInput.value = message.color || '#d62728';
-        if (alphaInput) alphaInput.value = message.alpha == null ? 1 : message.alpha;
-      });
-
-      function sendSeriesEdit(field, value, seriesId) {
-        var selector = document.getElementById('setting_series');
-        var id = seriesId || activeSeriesEditorId || (selector && Number(selector.value));
-        if (!id) return;
-        Shiny.setInputValue('series_edit_event', {
-          id: id, field: field, value: value, nonce: Math.random()
-        }, {priority: 'event'});
-      }
-
       document.addEventListener('change', function(event) {
         if (event.target.matches('input[type=radio][name=calibration_point]')) {
           Shiny.setInputValue('calibration_point', event.target.value, {priority: 'event'});
         }
-        if (event.target.id === 'setting_series') {
-          activeSeriesEditorId = Number(event.target.value) || null;
-        }
-        if (event.target.id === 'series_marker') sendSeriesEdit('marker', event.target.value);
-        if (event.target.id === 'series_size') sendSeriesEdit('size', event.target.value);
-        if (event.target.id === 'series_color') {
-          sendSeriesEdit('color', event.target.value);
-        }
-        if (event.target.id === 'series_alpha') sendSeriesEdit('alpha', event.target.value);
       });
 
       document.addEventListener('focusout', function(event) {
-        if (event.target.id === 'series_name') {
-          sendSeriesEdit('name', event.target.value, activeSeriesEditorId);
-        }
         if (/^axis_value_[xy][12]$/.test(event.target.id)) {
           Shiny.setInputValue('axis_value_commit', {
             point: event.target.id.replace('axis_value_', ''),
@@ -977,11 +946,6 @@ ui <- fluidPage(
         var commitOnEnter = /^axis_(value|pixel)_[xy][12]$/.test(event.target.id) ||
           /^box_(origin|x_axis_end|y_axis_end|xy_axis_end)_[xy]$/.test(event.target.id);
         if (commitOnEnter && event.key === 'Enter') {
-          event.preventDefault();
-          event.target.blur();
-          return;
-        }
-        if (event.target.id === 'series_name' && event.key === 'Enter') {
           event.preventDefault();
           event.target.blur();
           return;
@@ -1142,7 +1106,7 @@ ui <- fluidPage(
         class = "control-panel",
         div(
           class = "project-source-group",
-          div(class = "project-source-title", "작업폴더"),
+          div(class = "project-source-title", "작업 폴더"),
           div(
             class = "project-source-control-row",
             div(
@@ -1156,7 +1120,7 @@ ui <- fluidPage(
         ),
         div(
           class = "project-source-group",
-          div(class = "project-source-title", "작업파일"),
+          div(class = "project-source-title", "작업 파일"),
           div(
             class = "project-source-control-row",
             selectInput(
@@ -1172,6 +1136,26 @@ ui <- fluidPage(
             id = "edit_mode", selected = "point",
             tabPanel(
               title = "포인트", value = "point",
+              div(
+                div(class = "group-section-title", "그룹 정보"),
+                div(
+                  class = "group-select-row",
+                  div(
+                    class = "symbol-swatch-frame", title = "선택한 심볼 예시",
+                    plotOutput("symbol_swatch", width = "100%", height = "100%")
+                  ),
+                  div(
+                    class = "group-select-input",
+                    selectInput("setting_series", NULL, choices = NULL, selectize = FALSE)
+                  )
+                )
+              ),
+              div(
+                class = "group-action-row",
+                actionButton("edit_series", "정보변경"),
+                actionButton("add_series", "그룹추가"),
+                actionButton("delete_series", "그룹제거")
+              ),
               tags$label(`for` = "point", class = "point-section-title", "포인트 목록"),
               div(
                 class = "point-select-input",
@@ -1179,12 +1163,14 @@ ui <- fluidPage(
               ),
               div(
                 class = "point-action-row",
-                actionButton("add_point", "포인트 연속입력",
-                             title = "선택한 그룹에 포인트 연속 입력 시작"),
+                actionButton("add_point", "포인트 연속추가",
+                             title = "선택한 그룹에 포인트 연속 추가 시작"),
                 actionButton("previous_point", "이전 [", title = "이전 포인트 ([)"),
                 actionButton("next_point", "다음 ]", title = "다음 포인트 (])"),
                 actionButton("delete_point", "제거", title = "선택한 포인트 제거")
               ),
+              tags$hr(class = "panel-divider"),
+              div(class = "movement-section-title", "포인트 이동"),
               div(
                 id = "movement_controls",
                 class = "move-button-row movement-focus-target",
@@ -1201,61 +1187,10 @@ ui <- fluidPage(
                   "move_step", "이동 간격", choices = c(0.5, 1, 5, 10),
                   selected = 1, inline = TRUE, width = "100%"
                 )
-              ),
-              div(
-                tags$hr(class = "panel-divider"),
-                div(class = "group-section-title", "그룹 정보"),
-                div(
-                  class = "group-select-input",
-                  selectInput("setting_series", NULL, choices = NULL, selectize = FALSE)
-                )
-              ),
-              div(
-                class = "compact-control-row group-control-row",
-                tags$label(`for` = "series_name", "이름"),
-                textInput("series_name", NULL, value = "")
-              ),
-              div(
-                class = "symbol-preview-row",
-                span("심볼"),
-                div(
-                  class = "symbol-swatch-frame", title = "선택한 심볼 예시",
-                  plotOutput("symbol_swatch", width = "100%", height = "100%")
-                ),
-                div(
-                  class = "compact-style-field", title = "심볼 선택",
-                  selectInput("series_marker", NULL, choices = series_marker_choices,
-                              selected = "3", selectize = FALSE)
-                )
-              ),
-              div(
-                class = "group-style-pair-row group-style-properties-row",
-                div(
-                  class = "compact-style-field", title = "컬러",
-                  tags$label(`for` = "series_color", class = "sr-only", "컬러"),
-                  selectInput("series_color", NULL, choices = group_color_choices,
-                              selected = unname(group_color_choices["빨강"]), selectize = FALSE)
-                ),
-                tags$label(`for` = "series_size", "크기"),
-                div(
-                  class = "compact-style-field", title = "심볼 크기",
-                  numericInput(
-                    "series_size", NULL, value = 1, min = 0.2, max = 5,
-                    step = 0.1, width = "100%"
-                  )
-                ),
-                tags$label(`for` = "series_alpha", "알파"),
-                div(
-                  class = "compact-style-field", title = "alpha",
-                  numericInput(
-                    "series_alpha", NULL, value = 1, min = 0, max = 1,
-                    step = 0.1, width = "100%"
-                  )
-                )
               )
             ),
             tabPanel(
-              title = "박스", value = "calibration",
+              title = "좌표설정", value = "calibration",
               div(
                 class = "calibration-point-group movement-focus-target",
                 role = "radiogroup",
@@ -1329,6 +1264,7 @@ ui <- fluidPage(
               )
               ),
               tags$hr(class = "panel-divider"),
+              div(class = "movement-section-title", "포인트 이동"),
               div(
                 id = "calibration_movement_controls",
                 class = "move-button-row calibration-move-button-row",
@@ -1409,7 +1345,7 @@ server <- function(input, output, session) {
     calibration = NULL,
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
-    pending_cancel_mode = NULL,
+    pending_cancel_mode = NULL, pending_series_edit = NULL,
     point_dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
     calibration_undo = NULL,
     add_mode = FALSE, add_series = NULL,
@@ -1607,6 +1543,7 @@ server <- function(input, output, session) {
     rv$series <- NULL
     rv$series_baseline <- NULL
     rv$pending_cancel_mode <- NULL
+    rv$pending_series_edit <- NULL
     rv$pending_edit_mode <- NULL
     rv$point_dirty <- FALSE
     rv$calibration_dirty <- FALSE
@@ -1619,13 +1556,6 @@ server <- function(input, output, session) {
     updateSelectInput(session, "setting_series", choices = character(), selected = character())
     session$sendCustomMessage(
       "update-point-choices", list(choices = list(), selected = NULL)
-    )
-    session$sendCustomMessage(
-      "update-series-editor",
-      list(
-        id = NULL, name = "", marker = "3",
-        color = unname(group_color_choices["빨강"]), size = 1, alpha = 1
-      )
     )
   }
 
@@ -1761,27 +1691,6 @@ server <- function(input, output, session) {
     match(as.integer(id), rv$series$id)
   }
 
-  update_series_inputs <- function(id = NULL) {
-    row <- series_row(id)
-    if (is.na(row)) {
-      message <- list(
-        id = NULL, name = "", marker = "3",
-        color = unname(group_color_choices["빨강"]), size = 1, alpha = 1
-      )
-    } else {
-      message <- list(
-        id = rv$series$id[row],
-        name = rv$series$name[row],
-        marker = rv$series$marker[row],
-        color = rv$series$color[row],
-        size = rv$series$size[row],
-        alpha = rv$series$alpha[row]
-      )
-    }
-    session$sendCustomMessage("update-series-editor", message)
-    invisible()
-  }
-
   refresh_series_choices <- function(setting_selected = NULL) {
     choices <- series_choices()
     ids <- unname(choices)
@@ -1799,7 +1708,6 @@ server <- function(input, output, session) {
     updateSelectInput(
       session, "setting_series", choices = choices, selected = setting_selected
     )
-    update_series_inputs(setting_selected)
     invisible()
   }
 
@@ -1931,7 +1839,7 @@ server <- function(input, output, session) {
     rv$add_series <- if (active) as.integer(series) else NULL
     updateActionButton(
       session, "add_point",
-      label = if (active) "연속입력 종료" else "포인트 연속입력",
+      label = if (active) "연속추가 종료" else "포인트 연속추가",
       icon = NULL
     )
     session$sendCustomMessage("set-add-mode-state", list(active = isTRUE(active)))
@@ -2215,65 +2123,187 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$setting_series, {
-    update_series_inputs(input$setting_series)
     if (rv$add_mode && length(input$setting_series)) {
       rv$add_series <- as.integer(input$setting_series)
     }
   }, ignoreInit = TRUE)
 
-  observeEvent(input$series_edit_event, {
-    event <- input$series_edit_event
-    id <- suppressWarnings(as.integer(event$id))
-    field <- as.character(event$field)
-    value <- as.character(event$value)
+  show_series_edit_modal <- function(title, name, style) {
+    showModal(modalDialog(
+      title = title,
+      textInput("new_series_name", "이름", value = name),
+      fluidRow(
+        column(
+          6,
+          selectInput(
+            "new_series_color", "색상", choices = group_color_choices,
+            selected = style$color, selectize = FALSE, width = "100%"
+          )
+        ),
+        column(
+          6,
+          selectInput(
+            "new_series_marker", "형태", choices = series_marker_choices,
+            selected = style$marker, selectize = FALSE, width = "100%"
+          )
+        )
+      ),
+      fluidRow(
+        column(
+          6,
+          numericInput(
+            "new_series_size", "크기", value = style$size,
+            min = 0.2, max = 5, step = 0.1, width = "100%"
+          )
+        ),
+        column(
+          6,
+          numericInput(
+            "new_series_alpha", "불투명도", value = style$alpha,
+            min = 0, max = 1, step = 0.1, width = "100%"
+          )
+        )
+      ),
+      size = "s",
+      easyClose = TRUE,
+      footer = tagList(
+        modalButton("취소"),
+        actionButton("confirm_series_edit", "적용", class = "btn-primary")
+      )
+    ))
+    invisible()
+  }
+
+  observeEvent(input$edit_series, {
+    id <- suppressWarnings(as.integer(input$setting_series))
     row <- series_row(id)
-    if (is.na(row) || !field %in% c("name", "marker", "color", "size", "alpha")) return()
+    if (is.na(row)) {
+      rv$status <- "정보를 변경할 그룹을 선택하세요"
+      return()
+    }
+    rv$pending_series_edit <- list(action = "edit", id = id)
+    show_series_edit_modal(
+      "그룹 정보 변경", rv$series$name[row],
+      as.list(rv$series[row, c("marker", "color", "size", "alpha")])
+    )
+  }, ignoreInit = TRUE)
 
-    if (field == "name") {
-      value <- trimws(value)
-      if (!nzchar(value)) {
-        rv$status <- "그룹 명칭을 입력하세요"
-        update_series_inputs(id)
-        return()
-      }
-      if (value %in% rv$series$name[-row]) {
-        rv$status <- "그룹 명칭은 서로 달라야 합니다"
-        update_series_inputs(id)
-        return()
-      }
+  observeEvent(input$add_series, {
+    req(rv$series)
+    id <- if (nrow(rv$series)) max(rv$series$id) + 1L else 1L
+    name <- sprintf("group%02d", id)
+    while (name %in% rv$series$name) {
+      id <- id + 1L
+      name <- sprintf("group%02d", id)
     }
-    if (field == "marker" && !value %in% unname(series_marker_choices)) return()
-    if (field == "color") {
-      value <- tolower(value)
-      if (!grepl("^#[0-9a-f]{6}$", value)) return()
-    }
-    if (field == "size") {
-      value <- suppressWarnings(as.numeric(value))
-      if (!is.finite(value) || value < 0.2 || value > 5) {
-        update_series_inputs(id)
-        return()
-      }
-    }
-    if (field == "alpha") {
-      value <- suppressWarnings(as.numeric(value))
-      if (!is.finite(value) || value < 0 || value > 1) {
-        update_series_inputs(id)
-        return()
-      }
-    }
-    if (identical(rv$series[[field]][row], value)) return()
+    rv$pending_series_edit <- list(action = "add", id = id)
+    show_series_edit_modal("그룹 추가", name, group_style_defaults(id))
+  }, ignoreInit = TRUE)
 
-    rv$series[[field]][row] <- value
-    status <- c(
-      name = "그룹 명칭이 변경되었습니다",
-      marker = "그룹 심볼이 변경되었습니다",
-      color = "그룹 색상이 변경되었습니다",
-      size = "그룹 심볼 크기가 변경되었습니다",
-      alpha = "그룹 alpha가 변경되었습니다"
-    )[[field]]
-    mark_mode_changed("point", status)
-    refresh_series_choices(as.character(id))
-    update_point_choices()
+  observeEvent(input$confirm_series_edit, {
+    pending <- rv$pending_series_edit
+    if (is.null(pending) || !pending$action %in% c("edit", "add")) {
+      removeModal()
+      rv$pending_series_edit <- NULL
+      return()
+    }
+    id <- as.integer(pending$id)
+    row <- if (identical(pending$action, "edit")) series_row(id) else NA_integer_
+    if (identical(pending$action, "edit") && is.na(row)) {
+      removeModal()
+      rv$pending_series_edit <- NULL
+      return()
+    }
+    name <- trimws(input$new_series_name)
+    marker <- as.character(input$new_series_marker)
+    color <- tolower(as.character(input$new_series_color))
+    size <- suppressWarnings(as.numeric(input$new_series_size))
+    alpha <- suppressWarnings(as.numeric(input$new_series_alpha))
+    if (length(name) != 1L || !nzchar(name)) {
+      showNotification("그룹 이름을 입력하세요", type = "warning")
+      return()
+    }
+    other_names <- if (identical(pending$action, "edit")) {
+      rv$series$name[-row]
+    } else {
+      rv$series$name
+    }
+    if (name %in% other_names) {
+      showNotification("그룹 이름은 서로 달라야 합니다", type = "warning")
+      return()
+    }
+    if (length(marker) != 1L || !marker %in% unname(series_marker_choices) ||
+        length(color) != 1L || !color %in% tolower(unname(group_color_choices)) ||
+        length(size) != 1L || !is.finite(size) || size < 0.2 || size > 5 ||
+        length(alpha) != 1L || !is.finite(alpha) || alpha < 0 || alpha > 1) {
+      showNotification("그룹 설정값을 확인하세요", type = "warning")
+      return()
+    }
+    if (identical(pending$action, "add")) {
+      rv$series <- rbind(
+        rv$series,
+        data.frame(
+          id = id, name = name, marker = marker, color = color,
+          size = size, alpha = alpha, stringsAsFactors = FALSE
+        )
+      )
+      mark_mode_changed("point", paste0(name, " 그룹이 추가되었습니다"))
+      refresh_series_choices(as.character(id))
+      removeModal()
+      rv$pending_series_edit <- NULL
+      return()
+    }
+    series <- rv$series
+    name_changed <- !identical(series$name[row], name)
+    changed <- name_changed || !identical(series$marker[row], marker) ||
+      !identical(tolower(series$color[row]), color) ||
+      !isTRUE(all.equal(series$size[row], size)) ||
+      !isTRUE(all.equal(series$alpha[row], alpha))
+    if (changed) {
+      series$name[row] <- name
+      series$marker[row] <- marker
+      series$color[row] <- color
+      series$size[row] <- size
+      series$alpha[row] <- alpha
+      rv$series <- series
+      mark_mode_changed("point", "그룹 정보가 변경되었습니다")
+      if (name_changed) {
+        refresh_series_choices(as.character(id))
+        update_point_choices()
+      }
+    }
+    removeModal()
+    rv$pending_series_edit <- NULL
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$delete_series, {
+    id <- suppressWarnings(as.integer(input$setting_series))
+    row <- series_row(id)
+    if (is.na(row)) {
+      rv$status <- "제거할 그룹을 선택하세요"
+      return()
+    }
+    if (nrow(rv$data) && any(rv$data$series_id == id)) {
+      showModal(modalDialog(
+        title = "그룹 제거 불가",
+        paste0("'", rv$series$name[row], "' 그룹에 포인트가 있어 제거할 수 없습니다."),
+        easyClose = TRUE,
+        footer = modalButton("확인")
+      ))
+      return()
+    }
+    removed_name <- rv$series$name[row]
+    if (rv$add_mode && identical(as.integer(rv$add_series), id)) {
+      set_add_mode(FALSE)
+    }
+    rv$series <- rv$series[-row, , drop = FALSE]
+    selected_id <- if (nrow(rv$series)) {
+      as.character(rv$series$id[min(row, nrow(rv$series))])
+    } else {
+      NULL
+    }
+    mark_mode_changed("point", paste0(removed_name, " 그룹이 제거되었습니다"))
+    refresh_series_choices(selected_id)
   }, ignoreInit = TRUE)
 
   change_axis_name <- function(axis, new_name) {
@@ -2755,7 +2785,7 @@ server <- function(input, output, session) {
       rv$data <- rbind(rv$data, new_row)
       rv$selected <- nrow(rv$data)
       mark_mode_changed(
-        "point", "새 포인트가 추가되었습니다. 계속 입력하거나 연속입력 종료를 누르세요"
+        "point", "새 포인트가 추가되었습니다. 계속 추가하거나 연속추가 종료를 누르세요"
       )
       refresh_controls(rv$selected)
       return()
@@ -2891,7 +2921,8 @@ server <- function(input, output, session) {
     nearby_rows <- which(nearby)
     draw_series_points(nearby_rows, cex = 1.15)
     if (!active_mode_is("calibration") && !is.null(rv$selected)) {
-      draw_selected_point(rv$selected, cex = 1.7)
+      selected_cex <- 8 * 20 / radius
+      draw_selected_point(rv$selected, cex = selected_cex)
     }
   }, res = 130)
 
