@@ -1505,6 +1505,9 @@ server <- function(input, output, session) {
   selected_folder <- reactiveVal(initial_folder)
   folder_roots <- c("홈" = home_dir)
   catalog <- reactiveVal(list())
+  image_cache <- new.env(parent = emptyenv())
+  image_cache$key <- NULL
+  image_cache$value <- NULL
   rv <- reactiveValues(
     data = NULL, image_width = NULL, image_height = NULL,
     raster_matrix = NULL, dataset = NULL,
@@ -1526,6 +1529,27 @@ server <- function(input, output, session) {
     initial_file_snapshot = NULL,
     latest_saved_snapshot = NULL
   )
+
+  load_source_image <- function(path) {
+    normalized <- normalizePath(path, mustWork = TRUE)
+    info <- file.info(normalized)
+    cache_key <- c(
+      path = normalized,
+      size = as.character(info$size),
+      modified = as.character(as.numeric(info$mtime))
+    )
+    if (identical(image_cache$key, cache_key)) return(image_cache$value)
+
+    source_image <- png::readPNG(normalized)
+    value <- list(
+      width = dim(source_image)[2],
+      height = dim(source_image)[1],
+      raster_matrix = as.matrix(as.raster(source_image))
+    )
+    image_cache$key <- cache_key
+    image_cache$value <- value
+    value
+  }
 
   mode_changes_pending <- function(mode) {
     if (identical(mode, "point")) return(isTRUE(rv$point_dirty))
@@ -2148,9 +2172,9 @@ server <- function(input, output, session) {
   load_dataset <- function(key, reset_file_snapshots = TRUE) {
     req(key, key %in% names(catalog()))
     dataset <- catalog()[[key]]
-    source_image <- png::readPNG(dataset$source_path)
-    image_height <- dim(source_image)[1]
-    image_width <- dim(source_image)[2]
+    source_image <- load_source_image(dataset$source_path)
+    image_height <- source_image$height
+    image_width <- source_image$width
 
     calibration <- new_project_calibration(image_width, image_height)
     series <- default_groups()
@@ -2210,7 +2234,7 @@ server <- function(input, output, session) {
     rv$data <- data
     rv$image_width <- image_width
     rv$image_height <- image_height
-    rv$raster_matrix <- as.matrix(as.raster(source_image))
+    rv$raster_matrix <- source_image$raster_matrix
     rv$dataset <- dataset
     rv$calibration <- calibration
     rv$series <- series
