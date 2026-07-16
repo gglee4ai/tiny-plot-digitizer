@@ -1303,7 +1303,6 @@ ui <- fluidPage(
         div(
           class = "app-header",
           h3(class = "app-title", "Tiny Plot Digitizer"),
-          div(class = "app-subtitle", "A simple plot digitizing tool"),
           div(class = "app-version", "v2026.07")
         ),
         div(

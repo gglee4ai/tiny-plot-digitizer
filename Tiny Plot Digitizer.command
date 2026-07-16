@@ -2,6 +2,10 @@
 
 set -e
 
+# Finder/더블클릭 실행에서도 R이 한글과 유니코드 심볼을 UTF-8로 읽도록 고정합니다.
+export LANG="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RSCRIPT="$(command -v Rscript || true)"
 

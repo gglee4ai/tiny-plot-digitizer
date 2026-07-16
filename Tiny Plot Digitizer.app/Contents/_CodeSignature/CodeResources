@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/app/app.R</key>
 		<data>
-		Kb/ReyVH+NznpyQqbUZU5gvzLKk=
+		Ccjca0TMn3MTIBmKB8/bRD9GJ68=
 		</data>
 		<key>Resources/app/run.R</key>
 		<data>
@@ -21,10 +21,6 @@
 	<dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			uMtJBXlthRAPpmnhiF0wpwbiYbI=
-			</data>
 			<key>hash2</key>
 			<data>
 			cTCc+NZJXZ/dKlWs49zuVYHqQiWaItv0EADFBLIqOzA=
@@ -32,21 +28,13 @@
 		</dict>
 		<key>Resources/app/app.R</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			Kb/ReyVH+NznpyQqbUZU5gvzLKk=
-			</data>
 			<key>hash2</key>
 			<data>
-			RGv4V5HbsW3BBea8Jxj2r4vAnUVsjRAnHIWY024Udiw=
+			SJDLJrbpPpqpzpQchX2EZCNCtMlGFtfKoQwPuaGh3CU=
 			</data>
 		</dict>
 		<key>Resources/app/run.R</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			KoqpZTEX4HHgp9PZlbDo/cWpWKw=
-			</data>
 			<key>hash2</key>
 			<data>
 			FmpIgthJOS36bxw9BGfE++FVun4aOCIC4twYAJ6J7Yc=
