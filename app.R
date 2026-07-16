@@ -908,6 +908,16 @@ ui <- fluidPage(
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
       .movement-focus-target { outline: none; }
+      .editor-tabs .nav-tabs > li > a:focus,
+      .editor-tabs .nav-tabs > li > a:focus-visible {
+        outline: none !important;
+        box-shadow: none !important;
+      }
+      .editor-tabs > .tabbable > .tab-content > .tab-pane:focus,
+      .editor-tabs > .tabbable > .tab-content > .tab-pane:focus-visible {
+        outline: none !important;
+        box-shadow: none !important;
+      }
       .editor-tabs > .tabbable > .tab-content { display: grid; }
       .editor-tabs > .tabbable > .tab-content > .tab-pane {
         display: block;
@@ -1086,7 +1096,8 @@ ui <- fluidPage(
         var calibrationRadio = activeElement && activeElement.matches(
           'input[type=radio][name=calibration_point]'
         );
-        var editingField = !calibrationRadio && (
+        var datasetSelect = activeElement && activeElement.id === 'dataset';
+        var editingField = !calibrationRadio && !datasetSelect && (
           tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
           (activeElement && activeElement.isContentEditable)
         );
