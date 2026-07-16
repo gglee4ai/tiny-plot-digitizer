@@ -945,7 +945,8 @@ ui <- fluidPage(
       .calibration-move-button-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
       .move-button-row .btn { width: 100%; height: 34px; padding: 3px; font-size: 18px; border-radius: 4px; }
       .status-line { min-height: 22px; margin-top: 8px; font-size: 12px; }
-      .status-line, .point-values, .status-line .shiny-text-output, .point-values .shiny-text-output { max-width: 100%; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+      .status-line, .status-line .shiny-text-output { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: normal; word-break: break-all; }
+      .point-values, .point-values .shiny-text-output { max-width: 100%; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
       .compact-control-row { display: grid; gap: 5px; align-items: center; margin-bottom: 9px; }
       .compact-control-row > *, .compact-control-row .shiny-input-container { min-width: 0; }
       .compact-control-row .shiny-input-container { width: 100% !important; margin: 0; }
