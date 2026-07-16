@@ -224,11 +224,12 @@ axis_values <- function(data, calibration) {
     data$pixel_y,
     calibration$box
   )
+  position$x_fraction <- pmax(0, pmin(1, position$x_fraction))
+  position$y_fraction <- pmax(0, pmin(1, position$y_fraction))
   x <- interpolate_axis_values(position$x_fraction, calibration$x)
   if (!is.null(calibration$x$zero_threshold)) {
     x[abs(x) < calibration$x$zero_threshold] <- 0
   }
-  x <- pmax(x, calibration$x$minimum)
   y <- interpolate_axis_values(position$y_fraction, calibration$y)
   data.frame(x = x, y = y)
 }
@@ -748,11 +749,6 @@ default_groups <- function() {
   )
 }
 
-series_for_save <- function(series, data) {
-  used_ids <- if (nrow(data)) unique(as.integer(data$series_id)) else integer()
-  series[series$id %in% used_ids, , drop = FALSE]
-}
-
 restore_default_groups <- function(series) {
   defaults <- default_groups()
   missing_defaults <- defaults[!defaults$id %in% series$id, , drop = FALSE]
@@ -863,6 +859,28 @@ serialize_project_metadata <- function(
   )
 }
 
+serialize_project_csv <- function(
+    source_image, image_width, image_height, data, calibration, series) {
+  yaml_lines <- serialize_project_metadata(
+    source_image, image_width, image_height, calibration, series
+  )
+  body <- data
+  group_rows <- match(body$series_id, series$id)
+  if (anyNA(group_rows)) stop("포인트의 그룹 정보를 찾을 수 없습니다")
+  body$group <- series$name[group_rows]
+  values <- axis_values(body, calibration)
+  body[[calibration$x$column]] <- values$x
+  body[[calibration$y$column]] <- values$y
+  body <- body[c(
+    "point_id", "group", "pixel_x", "pixel_y",
+    calibration$x$column, calibration$y$column
+  )]
+  csv_lines <- capture.output(
+    utils::write.csv(body, row.names = FALSE, na = "")
+  )
+  c("# ---", paste0("# ", yaml_lines), "# ---", csv_lines)
+}
+
 atomic_replace <- function(path, write_temp) {
   target_dir <- normalizePath(dirname(path), mustWork = TRUE)
   target_path <- file.path(target_dir, basename(path))
@@ -905,6 +923,8 @@ atomic_write_bytes <- function(bytes, path) {
     )
   })
 }
+
+app_dirty_sessions <- new.env(parent = emptyenv())
 
 box_point_display_labels <- c(
   origin = "원점", x_axis_end = "X 끝점",
@@ -1052,6 +1072,18 @@ ui <- fluidPage(
       .btn-primary:hover { background: #24483e; border-color: #24483e; }
     ")),
     tags$script(HTML("
+      var unsavedChangesPending = false;
+
+      Shiny.addCustomMessageHandler('set-unsaved-state', function(message) {
+        unsavedChangesPending = Boolean(message.pending);
+      });
+
+      window.addEventListener('beforeunload', function(event) {
+        if (!unsavedChangesPending) return;
+        event.preventDefault();
+        event.returnValue = '';
+      });
+
       Shiny.addCustomMessageHandler('update-point-label', function(message) {
         var element = document.getElementById('point');
         if (!element) return;
@@ -1135,6 +1167,11 @@ ui <- fluidPage(
           event.target.blur();
           return;
         }
+        var activeElement = document.activeElement;
+        var tag = activeElement && activeElement.tagName;
+        var editingField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
+          (activeElement && activeElement.isContentEditable);
+        if (editingField) return;
         var directions = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'};
         if (directions[event.key]) {
           event.preventDefault();
@@ -1143,17 +1180,6 @@ ui <- fluidPage(
           if (movementButton) movementButton.click();
           return;
         }
-        var activeElement = document.activeElement;
-        var tag = activeElement && activeElement.tagName;
-        var calibrationRadio = activeElement && activeElement.matches(
-          'input[type=radio][name=calibration_point]'
-        );
-        var datasetSelect = activeElement && activeElement.id === 'dataset';
-        var editingField = !calibrationRadio && !datasetSelect && (
-          tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
-          (activeElement && activeElement.isContentEditable)
-        );
-        if (editingField) return;
         var activeEditMode = document.querySelector(
           '.editor-tabs .nav-tabs li.active a'
         );
@@ -1586,7 +1612,7 @@ server <- function(input, output, session) {
     point_dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
     calibration_undo = NULL,
     add_mode = FALSE, add_series = NULL,
-    selected = NULL, status = "", pending_switch_status = NULL,
+    selected = NULL, status = "", pending_navigation = NULL,
     updating_calibration_inputs = FALSE,
     calibration_target = NULL, calibration_point = NULL,
     active_edit_mode = "point", pending_edit_mode = NULL,
@@ -1628,6 +1654,39 @@ server <- function(input, output, session) {
   unsaved_changes_pending <- function() {
     mode_changes_pending("point") || mode_changes_pending("calibration")
   }
+
+  dirty_state_file <- trimws(Sys.getenv("DIGITIZER_DIRTY_STATE_FILE", ""))
+  dirty_session_key <- paste(
+    Sys.getpid(), format(Sys.time(), "%Y%m%d%H%M%OS6"),
+    sample.int(.Machine$integer.max, 1), sep = "-"
+  )
+  update_app_dirty_state <- function(pending = NULL, remove = FALSE) {
+    if (remove) {
+      if (exists(dirty_session_key, envir = app_dirty_sessions, inherits = FALSE)) {
+        rm(list = dirty_session_key, envir = app_dirty_sessions)
+      }
+    } else {
+      assign(dirty_session_key, isTRUE(pending), envir = app_dirty_sessions)
+    }
+    if (nzchar(dirty_state_file)) {
+      session_states <- as.list(app_dirty_sessions, all.names = TRUE)
+      app_pending <- length(session_states) && any(vapply(session_states, isTRUE, logical(1)))
+      try(
+        atomic_write_lines(if (app_pending) "dirty" else "clean", dirty_state_file),
+        silent = TRUE
+      )
+    }
+    invisible()
+  }
+
+  observe({
+    pending <- unsaved_changes_pending()
+    session$sendCustomMessage(
+      "set-unsaved-state", list(pending = pending)
+    )
+    update_app_dirty_state(pending)
+  })
+  session$onSessionEnded(function() update_app_dirty_state(remove = TRUE))
 
   unsaved_status <- function() {
     if (unsaved_changes_pending()) "저장되지 않은 변경" else ""
@@ -1734,7 +1793,7 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  save_changes <- function(auto = FALSE, target_path = NULL, force = FALSE) {
+  save_changes <- function(target_path = NULL, force = FALSE) {
     if (is.null(rv$data) || is.null(rv$dataset)) return(NULL)
     if (!force && !unsaved_changes_pending()) return(NULL)
     save_path <- if (is.null(target_path)) {
@@ -1759,36 +1818,16 @@ server <- function(input, output, session) {
       return(NULL)
     }
     finalize_point_order()
-    saved_series <- series_for_save(rv$series, rv$data)
-    yaml_lines <- serialize_project_metadata(
+    project_lines <- serialize_project_csv(
       rv$dataset$source_path, rv$image_width, rv$image_height,
-      rv$calibration, saved_series
-    )
-
-    body <- rv$data
-    group_rows <- match(body$series_id, saved_series$id)
-    if (anyNA(group_rows)) stop("포인트의 그룹 정보를 찾을 수 없습니다")
-    body$group <- saved_series$name[group_rows]
-    values <- axis_values(body, rv$calibration)
-    body[[rv$calibration$x$column]] <- values$x
-    body[[rv$calibration$y$column]] <- values$y
-    body <- body[c(
-      "group", "pixel_x", "pixel_y",
-      rv$calibration$x$column, rv$calibration$y$column
-    )]
-    csv_lines <- capture.output(
-      utils::write.csv(body, row.names = FALSE, na = "")
+      rv$data, rv$calibration, rv$series
     )
     saved <- tryCatch(
       {
-        atomic_write_lines(
-          c("# ---", paste0("# ", yaml_lines), "# ---", csv_lines),
-          save_path
-        )
+        atomic_write_lines(project_lines, save_path)
         TRUE
       },
       error = function(error) {
-        rv$pending_switch_status <- NULL
         rv$status <- paste0("저장 실패: ", conditionMessage(error))
         FALSE
       }
@@ -1806,24 +1845,11 @@ server <- function(input, output, session) {
     }
     current_catalog[[saved_path]] <- rv$dataset
     catalog(current_catalog)
-    if (!auto) {
-      update_project_input(current_catalog, selected = saved_path, freeze = TRUE)
-    }
+    update_project_input(current_catalog, selected = saved_path, freeze = TRUE)
     capture_all_baselines()
-
-    prefix <- if (auto) "자동 저장됨:" else "저장됨:"
-    message <- paste(prefix, display_path(save_path))
-    if (auto) {
-      rv$pending_switch_status <- message
-    } else {
-      rv$status <- message
-    }
+    message <- paste("저장됨:", display_path(save_path))
+    rv$status <- message
     message
-  }
-
-  save_before_navigation <- function() {
-    if (!unsaved_changes_pending()) return(TRUE)
-    !is.null(save_changes(auto = TRUE))
   }
 
   clear_dataset <- function() {
@@ -1859,13 +1885,7 @@ server <- function(input, output, session) {
     clear_dataset()
     projects <- discover_projects(folder_path)
     catalog(projects)
-    if (!length(projects)) {
-      selected <- ""
-      if (!is.null(rv$pending_switch_status)) {
-        rv$status <- rv$pending_switch_status
-        rv$pending_switch_status <- NULL
-      }
-    }
+    if (!length(projects)) selected <- ""
     update_project_input(projects, selected = selected)
   }
 
@@ -1893,6 +1913,95 @@ server <- function(input, output, session) {
     )
   }
 
+  perform_navigation <- function(navigation) {
+    kind <- navigation$kind
+    target <- navigation$target
+    if (identical(kind, "folder")) {
+      if (!dir.exists(target)) {
+        rv$status <- "선택한 작업 폴더를 찾을 수 없습니다"
+        update_folder_picker_target(selected_folder())
+        return(invisible(FALSE))
+      }
+      selected_folder(target)
+      update_folder_picker_target(target)
+      update_catalog(target)
+      return(invisible(TRUE))
+    }
+
+    if (identical(kind, "new_project")) {
+      if (!file.exists(target)) {
+        rv$status <- "선택한 원본 이미지를 찾을 수 없습니다"
+        return(invisible(FALSE))
+      }
+      key <- paste0("new::", target)
+      dataset <- list(
+        key = key,
+        source_path = target,
+        load_path = NULL,
+        label = paste0("[신규] ", basename(target))
+      )
+      projects <- catalog()
+      if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
+          rv$dataset$key %in% names(projects)) {
+        projects[[rv$dataset$key]] <- NULL
+      }
+      projects[[key]] <- dataset
+      catalog(projects)
+      update_project_input(projects, selected = key, freeze = TRUE)
+      load_dataset(key)
+      return(invisible(TRUE))
+    }
+
+    if (identical(kind, "dataset")) {
+      projects <- catalog()
+      if (!target %in% names(projects)) {
+        rv$status <- "선택한 작업 파일을 찾을 수 없습니다"
+        if (!is.null(rv$dataset)) {
+          update_project_input(projects, selected = rv$dataset$key, freeze = TRUE)
+        }
+        return(invisible(FALSE))
+      }
+      if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
+          !identical(rv$dataset$key, target) &&
+          rv$dataset$key %in% names(projects)) {
+        projects[[rv$dataset$key]] <- NULL
+        catalog(projects)
+      }
+      update_project_input(projects, selected = target, freeze = TRUE)
+      load_dataset(target)
+      return(invisible(TRUE))
+    }
+
+    stop("알 수 없는 작업 전환입니다: ", kind)
+  }
+
+  request_navigation <- function(kind, target, label) {
+    navigation <- list(kind = kind, target = target, label = label)
+    if (!unsaved_changes_pending()) {
+      perform_navigation(navigation)
+      return(invisible())
+    }
+
+    rv$pending_navigation <- navigation
+    if (identical(kind, "dataset") && !is.null(rv$dataset)) {
+      update_project_input(catalog(), selected = rv$dataset$key, freeze = TRUE)
+    }
+    if (identical(kind, "folder")) {
+      update_folder_picker_target(selected_folder())
+    }
+    showModal(modalDialog(
+      title = "저장되지 않은 변경사항",
+      paste0("현재 변경사항을 처리한 뒤 '", label, "'(으)로 이동합니다."),
+      footer = tagList(
+        actionButton("cancel_navigation", "취소"),
+        actionButton("discard_navigation", "저장하지 않음"),
+        actionButton("save_navigation", "저장 후 이동", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+    invisible()
+  }
+
   shinyFiles::shinyDirChoose(
     input, "folder", session = session, roots = folder_roots,
     defaultRoot = "홈", defaultPath = "",
@@ -1916,13 +2025,7 @@ server <- function(input, output, session) {
       update_folder_picker_target(folder_path)
       return()
     }
-    if (!save_before_navigation()) {
-      update_folder_picker_target(selected_folder())
-      return()
-    }
-    selected_folder(folder_path)
-    update_folder_picker_target(folder_path)
-    update_catalog(folder_path)
+    request_navigation("folder", folder_path, basename(folder_path))
   }, ignoreInit = TRUE)
 
   observeEvent(input$new_project, {
@@ -1955,25 +2058,8 @@ server <- function(input, output, session) {
   observeEvent(input$confirm_new_project, {
     req(input$new_project_image)
     source_path <- normalizePath(input$new_project_image, mustWork = TRUE)
-    if (!save_before_navigation()) return()
     removeModal()
-
-    key <- paste0("new::", source_path)
-    dataset <- list(
-      key = key,
-      source_path = source_path,
-      load_path = NULL,
-      label = paste0("[신규] ", basename(source_path))
-    )
-    projects <- catalog()
-    if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
-        rv$dataset$key %in% names(projects)) {
-      projects[[rv$dataset$key]] <- NULL
-    }
-    projects[[key]] <- dataset
-    catalog(projects)
-    update_project_input(projects, selected = key, freeze = TRUE)
-    load_dataset(key)
+    request_navigation("new_project", source_path, basename(source_path))
   })
 
   series_choices <- function() {
@@ -2281,7 +2367,11 @@ server <- function(input, output, session) {
       data$group <- persisted_series$id[group_rows]
       names(data)[names(data) == "group"] <- "series_id"
       data$point_id <- if ("point_id" %in% names(saved_data)) {
-        as.integer(saved_data$point_id)
+        point_ids <- suppressWarnings(as.numeric(saved_data$point_id))
+        if (any(!is.finite(point_ids)) || any(point_ids != round(point_ids))) {
+          stop("포인트 번호는 중복되지 않는 양의 정수여야 합니다")
+        }
+        as.integer(point_ids)
       } else {
         seq_len(nrow(data))
       }
@@ -2289,7 +2379,9 @@ server <- function(input, output, session) {
       data$series_id <- as.integer(data$series_id)
       data$pixel_x <- as.numeric(data$pixel_x)
       data$pixel_y <- as.numeric(data$pixel_y)
-      if (anyDuplicated(data$point_id)) stop("포인트 번호가 중복되어 있습니다")
+      if (anyNA(data$point_id) || any(data$point_id < 1L) || anyDuplicated(data$point_id)) {
+        stop("포인트 번호는 중복되지 않는 양의 정수여야 합니다")
+      }
       if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
         stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
       }
@@ -2318,16 +2410,11 @@ server <- function(input, output, session) {
       rv$initial_file_snapshot <- snapshot
       rv$latest_saved_snapshot <- snapshot
     }
-    rv$status <- if (is.null(rv$pending_switch_status)) {
-      if (loaded_project) {
-        paste("CSV 불러옴:", basename(project_path))
-      } else {
-        "신규 CSV 파일 작성 중"
-      }
+    rv$status <- if (loaded_project) {
+      paste("CSV 불러옴:", basename(project_path))
     } else {
-      rv$pending_switch_status
+      "신규 CSV 파일 작성 중"
     }
-    rv$pending_switch_status <- NULL
     refresh_controls(if (nrow(rv$data)) 1L else NULL)
     update_calibration_inputs()
   }
@@ -2336,24 +2423,35 @@ server <- function(input, output, session) {
     requested_key <- input$dataset
     req(nzchar(requested_key), requested_key %in% names(catalog()))
     if (!is.null(rv$dataset) && identical(requested_key, rv$dataset$key)) return()
-    if (!save_before_navigation()) {
-      if (!is.null(rv$dataset)) {
-        freezeReactiveValue(input, "dataset")
-        updateSelectInput(
-          session, "dataset", selected = rv$dataset$key
-        )
-      }
+    request_navigation(
+      "dataset", requested_key, catalog()[[requested_key]]$label
+    )
+  })
+
+  observeEvent(input$cancel_navigation, {
+    removeModal()
+    rv$pending_navigation <- NULL
+  })
+
+  observeEvent(input$discard_navigation, {
+    req(rv$pending_navigation)
+    navigation <- rv$pending_navigation
+    removeModal()
+    rv$pending_navigation <- NULL
+    perform_navigation(navigation)
+  })
+
+  observeEvent(input$save_navigation, {
+    req(rv$pending_navigation)
+    navigation <- rv$pending_navigation
+    saved <- save_changes()
+    if (is.null(saved)) {
+      showNotification(rv$status, type = "error")
       return()
     }
-    projects <- catalog()
-    if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
-        !identical(rv$dataset$key, requested_key) &&
-        rv$dataset$key %in% names(projects)) {
-      projects[[rv$dataset$key]] <- NULL
-      catalog(projects)
-      update_project_input(projects, selected = requested_key, freeze = TRUE)
-    }
-    load_dataset(requested_key)
+    removeModal()
+    rv$pending_navigation <- NULL
+    perform_navigation(navigation)
   })
 
   observeEvent(input$edit_mode, {
@@ -2412,7 +2510,7 @@ server <- function(input, output, session) {
     req(rv$pending_edit_mode)
     current_mode <- rv$active_edit_mode
     next_mode <- rv$pending_edit_mode
-    req(!is.null(save_changes(auto = FALSE)))
+    req(!is.null(save_changes()))
     removeModal()
     rv$pending_edit_mode <- NULL
     activate_edit_mode(next_mode, update_input = TRUE)
@@ -3544,7 +3642,7 @@ server <- function(input, output, session) {
     if (identical(mode, "custom")) {
       rv$save_name_custom <- csv_name_stem(custom, "파일이름")
     }
-    saved <- save_changes(auto = FALSE, target_path = save_path, force = TRUE)
+    saved <- save_changes(target_path = save_path, force = TRUE)
     if (is.null(saved)) {
       showNotification(rv$status, type = "error")
       return()
@@ -3559,7 +3657,7 @@ server <- function(input, output, session) {
       show_save_as_modal()
       return()
     }
-    req(!is.null(save_changes(auto = FALSE)))
+    req(!is.null(save_changes()))
   })
 
   output$status <- renderText(rv$status)

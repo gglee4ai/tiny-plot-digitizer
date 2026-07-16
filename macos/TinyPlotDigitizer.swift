@@ -47,12 +47,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard serverProcess?.isRunning == true, hasUnsavedChanges else {
+            return .terminateNow
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "저장되지 않은 변경사항"
+        alert.informativeText = "저장되지 않은 변경사항이 있습니다. Tiny Plot Digitizer를 종료하시겠습니까?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "종료")
+        alert.addButton(withTitle: "취소")
+        return alert.runModal() == .alertFirstButtonReturn
+            ? .terminateNow
+            : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
         if let process = serverProcess, process.isRunning {
             process.terminate()
         }
         try? logHandle?.close()
+        try? FileManager.default.removeItem(at: dirtyStateFileURL)
     }
 
     private func installMainMenu() {
@@ -130,6 +149,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             environment["LC_ALL"] = "en_US.UTF-8"
             environment["DIGITIZER_BROWSER"] = "false"
             environment["DIGITIZER_PORT"] = String(port)
+            try prepareDirtyStateFile()
+            environment["DIGITIZER_DIRTY_STATE_FILE"] = dirtyStateFileURL.path
             environment["PATH"] = [
                 "/opt/homebrew/bin",
                 "/usr/local/bin",
@@ -229,6 +250,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var logFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Tiny Plot Digitizer.log")
+    }
+
+    private var dirtyStateFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Tiny Plot Digitizer")
+            .appendingPathComponent("dirty-state")
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard let value = try? String(contentsOf: dirtyStateFileURL, encoding: .utf8) else {
+            return false
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines) == "dirty"
+    }
+
+    private func prepareDirtyStateFile() throws {
+        let url = dirtyStateFileURL
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "clean\n".write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func prepareLogHandle() throws -> FileHandle {
