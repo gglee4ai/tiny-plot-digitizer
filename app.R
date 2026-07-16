@@ -218,16 +218,6 @@ calibration_axis_points <- function(calibration) {
   )
 }
 
-valid_calibration_axis_points <- function(axis_points) {
-  point_names <- c("x1", "x2", "y1", "y2")
-  if (is.null(axis_points) || !all(point_names %in% names(axis_points))) return(FALSE)
-  all(vapply(point_names, function(name) {
-    point <- axis_points[[name]]
-    all(c("pixel_x", "pixel_y", "value") %in% names(point)) &&
-      all(is.finite(as.numeric(unlist(point[c("pixel_x", "pixel_y", "value")]))))
-  }, logical(1)))
-}
-
 axis_edge_corner_names <- function(calibration, axis_point) {
   if (startsWith(axis_point, "x")) {
     position <- if (!is.null(calibration$x$position)) calibration$x$position else "bottom"
@@ -541,9 +531,9 @@ source_image_metadata <- function(metadata) {
   )
 }
 
-is_digitizing_project_file <- function(path, source_path) {
+is_digitizing_project_file <- function(path, source_path, metadata = NULL) {
   if (!file.exists(path)) return(FALSE)
-  metadata <- try(read_csv_metadata(path), silent = TRUE)
+  if (is.null(metadata)) metadata <- try(read_csv_metadata(path), silent = TRUE)
   if (inherits(metadata, "try-error") ||
       !identical(as.character(metadata$format), project_format)) {
     return(FALSE)
@@ -591,7 +581,8 @@ discover_projects <- function(folder_path) {
     source_metadata <- source_image_metadata(metadata)
     if (is.null(source_metadata)) return(NULL)
     source_path <- file.path(folder_path, source_metadata$filename)
-    if (!file.exists(source_path) || !is_digitizing_project_file(path, source_path)) {
+    if (!file.exists(source_path) ||
+        !is_digitizing_project_file(path, source_path, metadata)) {
       return(NULL)
     }
     project_path <- normalizePath(path)
@@ -1988,7 +1979,6 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  refresh_point_choices <- function() update_point_choices()
   update_point_label <- function(row) {
     if (is.null(rv$data) || !nrow(rv$data) || row < 1L || row > nrow(rv$data)) {
       return(invisible())
@@ -2140,12 +2130,6 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  update_edit_mode_controls <- function(mode) {
-    updateActionButton(session, "reload", label = "변경 초기화")
-    if (identical(mode, "calibration")) set_add_mode(FALSE)
-    invisible()
-  }
-
   update_edit_mode_input <- function(mode) {
     rv$updating_edit_mode <- TRUE
     freezeReactiveValue(input, "edit_mode")
@@ -2156,7 +2140,7 @@ server <- function(input, output, session) {
   activate_edit_mode <- function(mode, update_input = FALSE) {
     rv$active_edit_mode <- mode
     capture_mode_baseline(mode)
-    update_edit_mode_controls(mode)
+    if (identical(mode, "calibration")) set_add_mode(FALSE)
     if (update_input) update_edit_mode_input(mode)
     invisible()
   }
@@ -2817,7 +2801,7 @@ server <- function(input, output, session) {
     remember_calibration_change()
     rv$calibration <- calibration
     mark_mode_changed("calibration", status)
-    refresh_point_choices()
+    update_point_choices()
     TRUE
   }
 
@@ -2964,7 +2948,7 @@ server <- function(input, output, session) {
       rv$calibration_undo <- NULL
       rv$status <- unsaved_status()
       update_calibration_inputs()
-      refresh_point_choices()
+      update_point_choices()
       return()
     }
 
