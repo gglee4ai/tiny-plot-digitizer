@@ -1,0 +1,40 @@
+#!/bin/zsh
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_ROOT="$(cd "$SCRIPT_DIR/../Resources/app" && pwd)"
+RSCRIPT="$(command -v Rscript || true)"
+LOG_DIR="$HOME/Library/Logs"
+LOG_FILE="$LOG_DIR/Tiny Plot Digitizer.log"
+
+show_error() {
+  /usr/bin/osascript -e "display alert \"Tiny Plot Digitizer\" message \"$1\" as critical" >/dev/null
+}
+
+if [[ -z "$RSCRIPT" && -x "/Library/Frameworks/R.framework/Resources/bin/Rscript" ]]; then
+  RSCRIPT="/Library/Frameworks/R.framework/Resources/bin/Rscript"
+fi
+
+if [[ -z "$RSCRIPT" ]]; then
+  show_error "Rscript를 찾을 수 없습니다. 먼저 R을 설치하세요."
+  exit 1
+fi
+
+if [[ ! -f "$APP_ROOT/run.R" ]]; then
+  show_error "앱과 같은 폴더에서 run.R을 찾을 수 없습니다."
+  exit 1
+fi
+
+mkdir -p "$LOG_DIR"
+"$RSCRIPT" "$APP_ROOT/run.R" >>"$LOG_FILE" 2>&1 &
+child_pid=$!
+trap 'kill "$child_pid" 2>/dev/null || true; exit 0' TERM INT HUP
+wait "$child_pid"
+exit_status=$?
+
+if [[ $exit_status -ne 0 ]]; then
+  show_error "앱을 실행하지 못했습니다. 로그를 확인하세요: $LOG_FILE"
+fi
+
+exit $exit_status

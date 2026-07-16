@@ -28,7 +28,11 @@ install.packages(c("shiny", "shinyFiles", "png", "yaml"))
 
 ### macOS
 
-`Tiny Plot Digitizer.command`를 더블클릭합니다.
+`Tiny Plot Digitizer.app`을 더블클릭합니다. 앱 번들에 실행 코드와 아이콘이 포함되어 있으므로 `Applications` 폴더로 옮겨 사용할 수 있습니다.
+
+처음 실행할 때 macOS가 차단하면 앱을 우클릭하고 **열기**를 선택합니다.
+
+간단한 터미널 실행기는 `Tiny Plot Digitizer.command`입니다.
 
 터미널에서는 다음 명령으로 실행할 수 있습니다.
 
@@ -64,8 +68,10 @@ Rscript run.R
 tiny-plot-digitizer/
 ├── app.R
 ├── run.R
+├── Tiny Plot Digitizer.app
 ├── Tiny Plot Digitizer.command
 ├── run.bat
+├── assets/
 └── README.md
 ```
 
