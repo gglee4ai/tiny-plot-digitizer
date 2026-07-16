@@ -29,33 +29,64 @@ parse_projective_calibration <- function(metadata, columns) {
   if (is.null(box) || !all(corner_names %in% names(box))) return(NULL)
   if (!all(c("pixel_x", "pixel_y") %in% columns)) return(NULL)
 
-  axis_names <- metadata$axis_names
-  axis_keys <- c(x = "x_axis", y = "y_axis")
-  if (is.null(axis_names) || !all(axis_keys %in% names(axis_names))) return(NULL)
-  axis_names <- vapply(axis_keys, function(axis) {
-    as.character(axis_names[[axis]])
+  axes_metadata <- list(x = metadata$x_axis, y = metadata$y_axis)
+  required_axis_fields <- c("name", "scale", "position")
+  if (any(vapply(axes_metadata, function(axis) {
+    is.null(axis) || !is.list(axis) || !all(required_axis_fields %in% names(axis)) ||
+      any(vapply(axis[required_axis_fields], length, integer(1)) != 1L)
+  }, logical(1)))) {
+    return(NULL)
+  }
+
+  axis_names <- vapply(axes_metadata, function(axis) {
+    as.character(axis$name)
   }, character(1))
   if (any(!grepl("^[A-Za-z][A-Za-z0-9_]*$", axis_names)) ||
       anyDuplicated(axis_names) || !all(axis_names %in% columns)) {
     return(NULL)
   }
 
-  saved_points <- metadata$axis_points
+  axis_scales <- vapply(axes_metadata, function(axis) {
+    as.character(axis$scale)
+  }, character(1))
+  if (any(!axis_scales %in% c("linear", "log10"))) return(NULL)
+
+  axis_positions <- vapply(axes_metadata, function(axis) {
+    as.character(axis$position)
+  }, character(1))
+  if (!axis_positions[["x"]] %in% c("bottom", "top") ||
+      !axis_positions[["y"]] %in% c("left", "right")) {
+    return(NULL)
+  }
+
+  saved_points <- list(
+    x1 = axes_metadata$x$x1,
+    x2 = axes_metadata$x$x2,
+    y1 = axes_metadata$y$y1,
+    y2 = axes_metadata$y$y2
+  )
   point_names <- c("x1", "x2", "y1", "y2")
-  if (is.null(saved_points) || !all(point_names %in% names(saved_points))) return(NULL)
+  if (any(vapply(saved_points, is.null, logical(1)))) return(NULL)
 
   axis_points <- lapply(point_names, function(name) {
     point <- saved_points[[name]]
-    coordinate_name <- if (startsWith(name, "x")) "pixel_x" else "pixel_y"
-    if (!all(c(coordinate_name, "value") %in% names(point))) return(NULL)
-    coordinate <- as.numeric(point[[coordinate_name]])
+    if (!is.list(point) || !all(c("pixel", "value") %in% names(point)) ||
+        length(point$pixel) != 1L || length(point$value) != 1L) {
+      return(NULL)
+    }
+    coordinate <- as.numeric(point$pixel)
     value <- as.numeric(point$value)
     if (!is.finite(coordinate) || !is.finite(value)) return(NULL)
 
-    end_name <- if (startsWith(name, "x")) "x_axis_end" else "y_axis_end"
+    edge_calibration <- list(
+      x = list(position = axis_positions[["x"]]),
+      y = list(position = axis_positions[["y"]]),
+      box = box
+    )
+    edge <- axis_edge(edge_calibration, name)
     coordinate_index <- if (startsWith(name, "x")) 1L else 2L
-    start <- c(as.numeric(box$origin$pixel_x), as.numeric(box$origin$pixel_y))
-    end <- c(as.numeric(box[[end_name]]$pixel_x), as.numeric(box[[end_name]]$pixel_y))
+    start <- edge$start
+    end <- edge$end
     extent <- end[coordinate_index] - start[coordinate_index]
     if (!all(is.finite(c(start, end))) || abs(extent) <= 1e-8) return(NULL)
 
@@ -83,6 +114,8 @@ parse_projective_calibration <- function(metadata, columns) {
       maximum_name = maximum_name,
       minimum = axis_points[[paste0(point_prefix, "1")]]$value,
       maximum = axis_points[[paste0(point_prefix, "2")]]$value,
+      scale = axis_scales[[axis]],
+      position = axis_positions[[axis]],
       zero_threshold_name = NULL,
       zero_threshold = NULL
     )
@@ -111,24 +144,27 @@ parse_projective_calibration <- function(metadata, columns) {
   updated
 }
 
+interpolate_axis_values <- function(fraction, axis) {
+  if (identical(axis$scale, "log10")) {
+    return(10^(
+      log10(axis$minimum) + fraction * (log10(axis$maximum) - log10(axis$minimum))
+    ))
+  }
+  axis$minimum + fraction * (axis$maximum - axis$minimum)
+}
+
 axis_values <- function(data, calibration) {
   position <- project_pixels_to_unit(
     data$pixel_x,
     data$pixel_y,
     calibration$box
   )
-  x <- with(
-    calibration$x,
-    minimum + position$x_fraction * (maximum - minimum)
-  )
+  x <- interpolate_axis_values(position$x_fraction, calibration$x)
   if (!is.null(calibration$x$zero_threshold)) {
     x[abs(x) < calibration$x$zero_threshold] <- 0
   }
   x <- pmax(x, calibration$x$minimum)
-  y <- with(
-    calibration$y,
-    minimum + position$y_fraction * (maximum - minimum)
-  )
+  y <- interpolate_axis_values(position$y_fraction, calibration$y)
   data.frame(x = x, y = y)
 }
 
@@ -192,20 +228,39 @@ valid_calibration_axis_points <- function(axis_points) {
   }, logical(1)))
 }
 
-axis_point_box_corner <- function(axis_point) {
-  c(x1 = "origin", x2 = "x_axis_end", y1 = "origin", y2 = "y_axis_end")[[axis_point]]
+axis_edge_corner_names <- function(calibration, axis_point) {
+  if (startsWith(axis_point, "x")) {
+    position <- if (!is.null(calibration$x$position)) calibration$x$position else "bottom"
+    if (identical(position, "top")) {
+      return(c("y_axis_end", "xy_axis_end"))
+    }
+    return(c("origin", "x_axis_end"))
+  }
+
+  position <- if (!is.null(calibration$y$position)) calibration$y$position else "left"
+  if (identical(position, "right")) {
+    return(c("x_axis_end", "xy_axis_end"))
+  }
+  c("origin", "y_axis_end")
+}
+
+axis_point_box_corner <- function(calibration, axis_point) {
+  edge_corners <- axis_edge_corner_names(calibration, axis_point)
+  edge_corners[if (axis_point %in% c("x1", "y1")) 1L else 2L]
 }
 
 axis_edge <- function(calibration, axis_point) {
-  end_name <- if (startsWith(axis_point, "x")) "x_axis_end" else "y_axis_end"
+  edge_corners <- axis_edge_corner_names(calibration, axis_point)
+  start <- calibration$box[[edge_corners[1]]]
+  end <- calibration$box[[edge_corners[2]]]
   list(
     start = c(
-      as.numeric(calibration$box$origin$pixel_x),
-      as.numeric(calibration$box$origin$pixel_y)
+      as.numeric(start$pixel_x),
+      as.numeric(start$pixel_y)
     ),
     end = c(
-      as.numeric(calibration$box[[end_name]]$pixel_x),
-      as.numeric(calibration$box[[end_name]]$pixel_y)
+      as.numeric(end$pixel_x),
+      as.numeric(end$pixel_y)
     )
   )
 }
@@ -223,7 +278,7 @@ normalize_calibration_axis_points <- function(calibration) {
   }
   for (name in c("x1", "x2", "y1", "y2")) {
     point <- calibration$axis_points[[name]]
-    corner <- calibration$box[[axis_point_box_corner(name)]]
+    corner <- calibration$box[[axis_point_box_corner(calibration, name)]]
     corner_pixel <- c(as.numeric(corner$pixel_x), as.numeric(corner$pixel_y))
     point_pixel <- c(as.numeric(point$pixel_x), as.numeric(point$pixel_y))
     default_fraction <- if (name %in% c("x1", "y1")) 0 else 1
@@ -263,16 +318,27 @@ normalize_calibration_axis_points <- function(calibration) {
 rebuild_calibration_ranges <- function(calibration) {
   calibration <- normalize_calibration_axis_points(calibration)
   points <- calibration_axis_points(calibration)
-  calculate_range <- function(first_name, second_name) {
+  calculate_range <- function(first_name, second_name, scale) {
     first <- points[points$axis_point == first_name, ]
     second <- points[points$axis_point == second_name, ]
     if (second$fraction - first$fraction <= 1e-8 || second$value <= first$value) return(NULL)
-    slope <- (second$value - first$value) / (second$fraction - first$fraction)
-    c(minimum = first$value - first$fraction * slope,
-      maximum = first$value + (1 - first$fraction) * slope)
+    if (identical(scale, "log10") && (first$value <= 0 || second$value <= 0)) return(NULL)
+    transformed <- if (identical(scale, "log10")) {
+      log10(c(first$value, second$value))
+    } else {
+      c(first$value, second$value)
+    }
+    slope <- (transformed[2] - transformed[1]) / (second$fraction - first$fraction)
+    transformed_range <- c(
+      minimum = transformed[1] - first$fraction * slope,
+      maximum = transformed[1] + (1 - first$fraction) * slope
+    )
+    range <- if (identical(scale, "log10")) 10^transformed_range else transformed_range
+    if (any(!is.finite(range))) return(NULL)
+    range
   }
-  x_range <- calculate_range("x1", "x2")
-  y_range <- calculate_range("y1", "y2")
+  x_range <- calculate_range("x1", "x2", calibration$x$scale)
+  y_range <- calculate_range("y1", "y2", calibration$y$scale)
   if (is.null(x_range) || is.null(y_range)) return(NULL)
 
   calibration$x$minimum <- x_range[["minimum"]]
@@ -393,28 +459,13 @@ draw_calibration_grid <- function(
   )
 
   axis_points <- calibration_axis_points(calibration)
-  triangle_size <- 0.0875
-  triangle_half_width <- xinch(triangle_size / 2)
-  triangle_half_height <- yinch(triangle_size / 2)
   for (index in seq_len(nrow(axis_points))) {
     x <- axis_points$pixel_x[index]
     y <- axis_points$pixel_y[index]
     point_color <- if (
       !is.null(selected_axis_point) && axis_points$axis_point[index] == selected_axis_point
     ) "#d62728" else "#1f5fbf"
-    if (startsWith(axis_points$axis_point[index], "x")) {
-      polygon(
-        c(x, x - triangle_half_width, x + triangle_half_width),
-        c(y + triangle_half_height, y - triangle_half_height, y - triangle_half_height),
-        col = point_color, border = point_color
-      )
-    } else {
-      polygon(
-        c(x + triangle_half_width, x - triangle_half_width, x - triangle_half_width),
-        c(y, y + triangle_half_height, y - triangle_half_height),
-        col = point_color, border = point_color
-      )
-    }
+    points(x, y, pch = 18, col = point_color, cex = 1.70)
   }
 
   if (!is.null(selected_box_point) && selected_box_point %in% corner_points$corner) {
@@ -509,8 +560,8 @@ is_digitizing_project_file <- function(path, source_path) {
   if (inherits(columns, "try-error")) return(FALSE)
   all(c("pixel_x", "pixel_y") %in% columns) &&
     "group" %in% columns &&
-    !is.null(metadata$axis_names) && !is.null(metadata$box_points) &&
-    !is.null(metadata$axis_points) && !is.null(metadata$display_styles)
+    !is.null(metadata$box_points) && !is.null(metadata$x_axis) &&
+    !is.null(metadata$y_axis) && !is.null(metadata$display_styles)
 }
 
 discover_images <- function(folder_path) {
@@ -581,13 +632,16 @@ new_project_calibration <- function(width, height) {
   parse_projective_calibration(
     list(
       format = project_format,
-      axis_names = list(x_axis = "x", y_axis = "y"),
       box_points = box,
-      axis_points = list(
-        x1 = list(pixel_x = 0, value = 0),
-        x2 = list(pixel_x = width, value = 1),
-        y1 = list(pixel_y = height, value = 0),
-        y2 = list(pixel_y = 0, value = 1)
+      x_axis = list(
+        name = "x", scale = "linear", position = "bottom",
+        x1 = list(pixel = 0, value = 0),
+        x2 = list(pixel = width, value = 1)
+      ),
+      y_axis = list(
+        name = "y", scale = "linear", position = "left",
+        y1 = list(pixel = height, value = 0),
+        y2 = list(pixel = 0, value = 1)
       )
     ),
     c("pixel_x", "pixel_y", "x", "y")
@@ -696,14 +750,14 @@ serialize_project_metadata <- function(
     source_image, image_width, image_height, calibration, series) {
   if (anyDuplicated(series$name)) stop("그룹 명칭이 중복되어 저장할 수 없습니다")
   number <- format_yaml_number
-  axis_lines <- vapply(c("x1", "x2", "y1", "y2"), function(name) {
+  axis_point_line <- function(name) {
     point <- calibration$axis_points[[name]]
     coordinate <- if (startsWith(name, "x")) "pixel_x" else "pixel_y"
     sprintf(
-      "  %s: {%s: %s, value: %s}",
-      name, coordinate, number(point[[coordinate]]), number(point$value)
+      "  %s: {pixel: %s, value: %s}",
+      name, number(point[[coordinate]]), number(point$value)
     )
-  }, character(1))
+  }
 
   corner_names <- c("origin", "x_axis_end", "y_axis_end", "xy_axis_end")
   corner_lines <- vapply(corner_names, function(name) {
@@ -734,12 +788,17 @@ serialize_project_metadata <- function(
       "  size: {width: %s, height: %s}",
       number(image_width), number(image_height)
     ),
-    sprintf(
-      "axis_names: {x_axis: %s, y_axis: %s}",
-      yaml_quote(calibration$x$column), yaml_quote(calibration$y$column)
-    ),
     "box_points:", corner_lines,
-    "axis_points:", axis_lines,
+    "x_axis:",
+    paste0("  name: ", yaml_quote(calibration$x$column)),
+    paste0("  scale: ", calibration$x$scale),
+    paste0("  position: ", calibration$x$position),
+    axis_point_line("x1"), axis_point_line("x2"),
+    "y_axis:",
+    paste0("  name: ", yaml_quote(calibration$y$column)),
+    paste0("  scale: ", calibration$y$scale),
+    paste0("  position: ", calibration$y$position),
+    axis_point_line("y1"), axis_point_line("y2"),
     if (length(style_lines)) {
       c("display_styles:", style_lines)
     } else {
@@ -830,12 +889,18 @@ ui <- fluidPage(
       .group-action-row .btn { width: 100%; height: 34px; padding: 5px 2px; border-radius: 4px; font-size: 12px; }
       .symbol-swatch-frame { width: 34px; height: 34px; box-sizing: border-box; border: 1px solid #aaa; border-radius: 4px; overflow: hidden; background: white; }
       .symbol-swatch-frame .shiny-plot-output { width: 100% !important; height: 100% !important; }
-      .calibration-axis-name-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; margin-bottom: 8px; }
-      .calibration-axis-name-row > *, .calibration-axis-name-row .form-group { min-width: 0; }
-      .calibration-axis-name-row .form-group { width: 100%; margin: 0; }
-      .calibration-axis-name-row input { width: 100%; min-width: 0; height: 28px; padding: 3px 6px; }
       .calibration-setting-title { margin: 8px 0 5px; font-weight: 600; }
       .calibration-setting-table { margin-bottom: 9px; }
+      .axis-name-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 12px; align-items: center; min-height: 30px; margin-bottom: 1px; }
+      .axis-name-row > *, .axis-name-row .form-group { min-width: 0; }
+      .axis-name-row .axis-name-label { font-weight: 400; white-space: nowrap; }
+      .axis-name-row .form-group { width: 100%; margin: 0; }
+      .axis-name-row input { width: 100%; min-width: 0; height: 28px; padding: 3px 6px; }
+      .axis-option-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 10px; align-items: center; min-height: 30px; margin: 1px 0 3px; }
+      .axis-option-row > *, .axis-option-row .form-group { min-width: 0; }
+      .axis-option-row .form-group { width: 100% !important; margin: 0; }
+      .axis-option-row .shiny-options-group { display: grid; grid-template-columns: repeat(2, max-content); column-gap: 8px; justify-content: center; align-items: center; white-space: nowrap; }
+      .axis-option-row .radio-inline { display: block; margin: 0; padding-left: 16px; font-size: 12px; }
       .calibration-setting-row { display: grid; align-items: center; min-height: 31px; gap: 5px; }
       .box-setting-row { grid-template-columns: minmax(82px, 1fr) auto 75px auto 75px; }
       .axis-setting-row { grid-template-columns: minmax(40px, 1fr) auto 75px auto 75px; gap: 5px; }
@@ -851,7 +916,6 @@ ui <- fluidPage(
       .zoom-option .selectize-control { width: 90px !important; justify-self: end; }
       .move-point-option .control-label { margin: 0; font-size: 14px; font-weight: 400; }
       .zoom-option .control-label { font-weight: 600; }
-      .zoom-divider { margin-top: 2px; }
       .move-point-option .form-control, .move-point-option .selectize-control { width: 100%; min-width: 0; }
       .move-step-option .shiny-options-group { text-align: right; white-space: nowrap; }
       .save-actions { width: 100%; margin: 0; }
@@ -1185,7 +1249,7 @@ ui <- fluidPage(
                 class = "move-point-option move-step-option",
                 radioButtons(
                   "move_step", "이동 간격", choices = c(0.5, 1, 5, 10),
-                  selected = 1, inline = TRUE, width = "100%"
+                  selected = 0.5, inline = TRUE, width = "100%"
                 )
               )
             ),
@@ -1195,14 +1259,6 @@ ui <- fluidPage(
                 class = "calibration-point-group movement-focus-target",
                 role = "radiogroup",
                 tabindex = "-1",
-                div(class = "calibration-setting-title", "축 명칭"),
-                div(
-                  class = "calibration-axis-name-row",
-                  span("X"),
-                  textInput("x_axis_name", NULL, value = ""),
-                  span("Y"),
-                  textInput("y_axis_name", NULL, value = "")
-                ),
                 div(class = "calibration-setting-title", "박스 설정"),
                 div(
                   id = "box_point",
@@ -1239,8 +1295,67 @@ ui <- fluidPage(
                 id = "axis_point",
                 class = "calibration-setting-table",
                 div(
+                  class = "axis-name-row",
+                  span(class = "axis-name-label", "X축"),
+                  textInput("x_axis_name", NULL, value = "")
+                ),
+                div(
+                  class = "axis-option-row",
+                  radioButtons(
+                    "x_axis_scale", NULL,
+                    choices = c("선형" = "linear", "로그" = "log10"),
+                    selected = "linear", inline = TRUE, width = "100%"
+                  ),
+                  radioButtons(
+                    "x_axis_position", NULL,
+                    choices = c("하단" = "bottom", "상단" = "top"),
+                    selected = "bottom", inline = TRUE, width = "100%"
+                  )
+                ),
+                div(
                   class = "shiny-options-group",
-                  lapply(c("x1", "x2", "y1", "y2"), function(point_name) {
+                  lapply(c("x1", "x2"), function(point_name) {
+                    axis_letter <- substr(point_name, 1, 1)
+                    div(
+                      class = "calibration-setting-row axis-setting-row",
+                      div(
+                        class = "radio calibration-setting-radio",
+                        tags$label(
+                          tags$input(
+                            type = "radio", name = "calibration_point",
+                            value = paste("axis", point_name, sep = ":")
+                          ),
+                          tags$span(toupper(point_name))
+                        )
+                      ),
+                      span(class = "calibration-coordinate", "값"),
+                      numericInput(paste0("axis_value_", point_name), NULL, value = 0, width = "100%"),
+                      span(class = "calibration-coordinate", axis_letter),
+                      numericInput(paste0("axis_pixel_", point_name), NULL, value = 0, width = "100%")
+                    )
+                  })
+                ),
+                div(
+                  class = "axis-name-row",
+                  span(class = "axis-name-label", "Y축"),
+                  textInput("y_axis_name", NULL, value = "")
+                ),
+                div(
+                  class = "axis-option-row",
+                  radioButtons(
+                    "y_axis_scale", NULL,
+                    choices = c("선형" = "linear", "로그" = "log10"),
+                    selected = "linear", inline = TRUE, width = "100%"
+                  ),
+                  radioButtons(
+                    "y_axis_position", NULL,
+                    choices = c("좌측" = "left", "우측" = "right"),
+                    selected = "left", inline = TRUE, width = "100%"
+                  )
+                ),
+                div(
+                  class = "shiny-options-group",
+                  lapply(c("y1", "y2"), function(point_name) {
                     axis_letter <- substr(point_name, 1, 1)
                     div(
                       class = "calibration-setting-row axis-setting-row",
@@ -1281,13 +1396,12 @@ ui <- fluidPage(
                 class = "move-point-option move-step-option",
                 radioButtons(
                   "calibration_move_step", "이동 간격", choices = c(0.5, 1, 5, 10),
-                  selected = 1, inline = TRUE, width = "100%"
+                  selected = 0.5, inline = TRUE, width = "100%"
                 )
               )
             )
           )
         ),
-        tags$hr(class = "panel-divider zoom-divider"),
         div(
           class = "move-point-option zoom-option",
           selectInput(
@@ -1794,7 +1908,8 @@ server <- function(input, output, session) {
     input_ids <- c(
       paste0("axis_pixel_", axis_points), paste0("axis_value_", axis_points),
       paste0("box_", box_points, "_x"), paste0("box_", box_points, "_y"),
-      "x_axis_name", "y_axis_name"
+      "x_axis_name", "y_axis_name",
+      "x_axis_scale", "y_axis_scale", "x_axis_position", "y_axis_position"
     )
 
     rv$updating_calibration_inputs <- TRUE
@@ -1828,6 +1943,10 @@ server <- function(input, output, session) {
     }
     updateTextInput(session, "x_axis_name", value = calibration$x$column)
     updateTextInput(session, "y_axis_name", value = calibration$y$column)
+    updateRadioButtons(session, "x_axis_scale", selected = calibration$x$scale)
+    updateRadioButtons(session, "y_axis_scale", selected = calibration$y$scale)
+    updateRadioButtons(session, "x_axis_position", selected = calibration$x$position)
+    updateRadioButtons(session, "y_axis_position", selected = calibration$y$position)
     session$onFlushed(function() {
       rv$updating_calibration_inputs <- FALSE
     }, once = TRUE)
@@ -2337,6 +2456,86 @@ server <- function(input, output, session) {
     change_axis_name("y", input$y_axis_name)
   }, ignoreInit = TRUE)
 
+  change_axis_scale <- function(axis, new_scale) {
+    req(rv$calibration, rv$calibration$type == "projective")
+    if (rv$updating_calibration_inputs) return()
+    new_scale <- as.character(new_scale)
+    if (length(new_scale) != 1L || !new_scale %in% c("linear", "log10")) return()
+
+    current_scale <- rv$calibration[[axis]]$scale
+    if (identical(new_scale, current_scale)) return()
+    axis_points <- paste0(axis, c("1", "2"))
+    values <- vapply(
+      axis_points,
+      function(point_name) as.numeric(rv$calibration$axis_points[[point_name]]$value),
+      numeric(1)
+    )
+    if (identical(new_scale, "log10") && any(values <= 0)) {
+      updateRadioButtons(session, paste0(axis, "_axis_scale"), selected = current_scale)
+      rv$status <- paste0(toupper(axis), "축 로그 값은 모두 0보다 커야 합니다")
+      return()
+    }
+
+    calibration <- rv$calibration
+    calibration[[axis]]$scale <- new_scale
+    calibration <- rebuild_calibration_ranges(calibration)
+    if (is.null(calibration)) {
+      updateRadioButtons(session, paste0(axis, "_axis_scale"), selected = current_scale)
+      rv$status <- "축 값과 위치를 확인하세요"
+      return()
+    }
+    apply_calibration_change(
+      calibration,
+      paste0(toupper(axis), "축 눈금이 ", if (new_scale == "log10") "로그" else "선형", "으로 변경되었습니다")
+    )
+    update_calibration_inputs()
+  }
+
+  change_axis_position <- function(axis, new_position) {
+    req(rv$calibration, rv$calibration$type == "projective")
+    if (rv$updating_calibration_inputs) return()
+    allowed <- if (axis == "x") c("bottom", "top") else c("left", "right")
+    new_position <- as.character(new_position)
+    if (length(new_position) != 1L || !new_position %in% allowed) return()
+
+    current_position <- rv$calibration[[axis]]$position
+    if (identical(new_position, current_position)) return()
+    calibration <- rv$calibration
+    calibration[[axis]]$position <- new_position
+    calibration <- rebuild_calibration_ranges(calibration)
+    if (is.null(calibration)) {
+      updateRadioButtons(session, paste0(axis, "_axis_position"), selected = current_position)
+      rv$status <- "축 값과 위치를 확인하세요"
+      return()
+    }
+    position_label <- if (axis == "x") {
+      if (new_position == "top") "상단" else "하단"
+    } else {
+      if (new_position == "right") "우측" else "좌측"
+    }
+    apply_calibration_change(
+      calibration,
+      paste0(toupper(axis), "축 위치가 ", position_label, "으로 변경되었습니다")
+    )
+    update_calibration_inputs()
+  }
+
+  observeEvent(input$x_axis_scale, {
+    change_axis_scale("x", input$x_axis_scale)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$y_axis_scale, {
+    change_axis_scale("y", input$y_axis_scale)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$x_axis_position, {
+    change_axis_position("x", input$x_axis_position)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$y_axis_position, {
+    change_axis_position("y", input$y_axis_position)
+  }, ignoreInit = TRUE)
+
   observeEvent(input$calibration_point, {
     req(rv$calibration, rv$calibration$type == "projective")
     selection <- strsplit(input$calibration_point, ":", fixed = TRUE)[[1]]
@@ -2413,6 +2612,11 @@ server <- function(input, output, session) {
     if (isTRUE(all.equal(value, current_value, tolerance = 0))) return()
 
     axis_name <- substr(point_name, 1, 1)
+    if (identical(calibration[[axis_name]]$scale, "log10") && value <= 0) {
+      updateNumericInput(session, value_input, value = current_value)
+      rv$status <- paste0(toupper(axis_name), "축 로그 값은 0보다 커야 합니다")
+      return()
+    }
     point_number <- substr(point_name, 2, 2)
     other_point_name <- paste0(axis_name, if (point_number == "1") "2" else "1")
     other_value <- as.numeric(calibration$axis_points[[other_point_name]]$value)
