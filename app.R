@@ -19,67 +19,96 @@ format_pixel_coordinate <- function(value) {
   format(round_pixel_coordinate(value), scientific = FALSE, trim = TRUE)
 }
 
+project_format <- "Tiny Plot Digitizer 1.0"
+
 parse_projective_calibration <- function(metadata, columns) {
-  box <- metadata$calibration_box
+  if (!identical(as.character(metadata$format), project_format)) return(NULL)
+
+  box <- metadata$box_points
   corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
   if (is.null(box) || !all(corner_names %in% names(box))) return(NULL)
   if (!all(c("pixel_x", "pixel_y") %in% columns)) return(NULL)
 
-  minimum_names <- grep("_(min|minimum)$", names(box), value = TRUE)
-  axes <- lapply(minimum_names, function(minimum_name) {
-    axis_name <- sub("_(min|minimum)$", "", minimum_name)
-    maximum_names <- c(
-      paste0(axis_name, "_max"),
-      paste0(axis_name, "_maximum")
-    )
-    maximum_name <- maximum_names[maximum_names %in% names(box)][1]
-    if (is.na(maximum_name)) return(NULL)
+  axis_names <- metadata$axis_names
+  axis_keys <- c(x = "x_axis", y = "y_axis")
+  if (is.null(axis_names) || !all(axis_keys %in% names(axis_names))) return(NULL)
+  axis_names <- vapply(axis_keys, function(axis) {
+    as.character(axis_names[[axis]])
+  }, character(1))
+  if (any(!grepl("^[A-Za-z][A-Za-z0-9_]*$", axis_names)) ||
+      anyDuplicated(axis_names) || !all(axis_names %in% columns)) {
+    return(NULL)
+  }
 
-    zero_threshold_name <- paste0(axis_name, "_zero_threshold")
+  saved_points <- metadata$axis_points
+  point_names <- c("x1", "x2", "y1", "y2")
+  if (is.null(saved_points) || !all(point_names %in% names(saved_points))) return(NULL)
+
+  axis_points <- lapply(point_names, function(name) {
+    point <- saved_points[[name]]
+    coordinate_name <- if (startsWith(name, "x")) "pixel_x" else "pixel_y"
+    if (!all(c(coordinate_name, "value") %in% names(point))) return(NULL)
+    coordinate <- as.numeric(point[[coordinate_name]])
+    value <- as.numeric(point$value)
+    if (!is.finite(coordinate) || !is.finite(value)) return(NULL)
+
+    end_name <- if (startsWith(name, "x")) "x_axis_end" else "y_axis_end"
+    coordinate_index <- if (startsWith(name, "x")) 1L else 2L
+    start <- c(as.numeric(box$origin$pixel_x), as.numeric(box$origin$pixel_y))
+    end <- c(as.numeric(box[[end_name]]$pixel_x), as.numeric(box[[end_name]]$pixel_y))
+    extent <- end[coordinate_index] - start[coordinate_index]
+    if (!all(is.finite(c(start, end))) || abs(extent) <= 1e-8) return(NULL)
+
+    fraction <- (coordinate - start[coordinate_index]) / extent
+    if (!is.finite(fraction) || fraction < -1e-8 || fraction > 1 + 1e-8) return(NULL)
+    fraction <- max(0, min(1, fraction))
+    pixel <- start + fraction * (end - start)
+    default_fraction <- if (name %in% c("x1", "y1")) 0 else 1
     list(
-      column = axis_name,
-      minimum_name = minimum_name,
-      maximum_name = maximum_name,
-      minimum = as.numeric(box[[minimum_name]]),
-      maximum = as.numeric(box[[maximum_name]]),
-      zero_threshold_name = if (zero_threshold_name %in% names(box)) {
-        zero_threshold_name
-      } else {
-        NULL
-      },
-      zero_threshold = if (zero_threshold_name %in% names(box)) {
-        as.numeric(box[[zero_threshold_name]])
-      } else {
-        NULL
-      }
+      pixel_x = pixel[1], pixel_y = pixel[2], value = value,
+      source = if (abs(fraction - default_fraction) <= 1e-8) "box" else "new",
+      fraction = fraction
     )
   })
-  axes <- Filter(Negate(is.null), axes)
-  if (length(axes) < 2) return(NULL)
+  if (any(vapply(axis_points, is.null, logical(1)))) return(NULL)
+  names(axis_points) <- point_names
+
+  axes <- lapply(c("x", "y"), function(axis) {
+    point_prefix <- if (axis == "x") "x" else "y"
+    minimum_name <- paste0(axis_names[[axis]], "_min")
+    maximum_name <- paste0(axis_names[[axis]], "_max")
+    list(
+      column = axis_names[[axis]],
+      minimum_name = minimum_name,
+      maximum_name = maximum_name,
+      minimum = axis_points[[paste0(point_prefix, "1")]]$value,
+      maximum = axis_points[[paste0(point_prefix, "2")]]$value,
+      zero_threshold_name = NULL,
+      zero_threshold = NULL
+    )
+  })
+  names(axes) <- c("x", "y")
+  box[[axes$x$minimum_name]] <- axes$x$minimum
+  box[[axes$x$maximum_name]] <- axes$x$maximum
+  box[[axes$y$minimum_name]] <- axes$y$minimum
+  box[[axes$y$maximum_name]] <- axes$y$maximum
 
   calibration <- list(
     type = "projective",
-    x = axes[[1]],
-    y = axes[[2]],
+    x = axes$x,
+    y = axes$y,
     box = box,
-    axis_points = metadata$calibration_axes,
+    axis_points = axis_points,
     text = sprintf(
       "projective: %s [%s, %s]; %s [%s, %s]",
-      axes[[1]]$column, axes[[1]]$minimum, axes[[1]]$maximum,
-      axes[[2]]$column, axes[[2]]$minimum, axes[[2]]$maximum
+      axes$x$column, axes$x$minimum, axes$x$maximum,
+      axes$y$column, axes$y$minimum, axes$y$maximum
     )
   )
-  if (!valid_calibration_axis_points(calibration$axis_points)) {
-    calibration$axis_points <- list(
-      x1 = c(box$origin, value = axes[[1]]$minimum, source = "box", fraction = 0),
-      x2 = c(box$x_axis_end, value = axes[[1]]$maximum, source = "box", fraction = 1),
-      y1 = c(box$origin, value = axes[[2]]$minimum, source = "box", fraction = 0),
-      y2 = c(box$y_axis_end, value = axes[[2]]$maximum, source = "box", fraction = 1)
-    )
-  }
   calibration <- normalize_calibration_axis_points(calibration)
   updated <- rebuild_calibration_ranges(calibration)
-  if (is.null(updated)) calibration else updated
+  if (is.null(updated) || !valid_projective_calibration(updated)) return(NULL)
+  updated
 }
 
 axis_values <- function(data, calibration) {
@@ -442,11 +471,35 @@ marker_pch <- function(marker) {
   marker_glyph(marker)
 }
 
+source_image_metadata <- function(metadata) {
+  value <- metadata$source_image
+  if (is.null(value) || is.null(value$filename) || is.null(value$size) ||
+      !all(c("width", "height") %in% names(value$size))) {
+    return(NULL)
+  }
+  width <- suppressWarnings(as.numeric(value$size$width))
+  height <- suppressWarnings(as.numeric(value$size$height))
+  if (!is.finite(width) || !is.finite(height) || width <= 0 || height <= 0 ||
+      width != round(width) || height != round(height)) {
+    return(NULL)
+  }
+  list(
+    filename = basename(as.character(value$filename)),
+    width = as.integer(width),
+    height = as.integer(height)
+  )
+}
+
 is_digitizing_project_file <- function(path, source_path) {
   if (!file.exists(path)) return(FALSE)
   metadata <- try(read_csv_metadata(path), silent = TRUE)
-  if (inherits(metadata, "try-error") || is.null(metadata$source_image)) return(FALSE)
-  if (!identical(basename(as.character(metadata$source_image)), basename(source_path))) {
+  if (inherits(metadata, "try-error") ||
+      !identical(as.character(metadata$format), project_format)) {
+    return(FALSE)
+  }
+  source_metadata <- source_image_metadata(metadata)
+  if (is.null(source_metadata) ||
+      !identical(source_metadata$filename, basename(source_path))) {
     return(FALSE)
   }
   columns <- try(
@@ -456,7 +509,8 @@ is_digitizing_project_file <- function(path, source_path) {
   if (inherits(columns, "try-error")) return(FALSE)
   all(c("pixel_x", "pixel_y") %in% columns) &&
     "group" %in% columns &&
-    !is.null(metadata$calibration_box) && !is.null(metadata$calibration_axes)
+    !is.null(metadata$axis_names) && !is.null(metadata$box_points) &&
+    !is.null(metadata$axis_points) && !is.null(metadata$display_styles)
 }
 
 latest_project_file <- function(source_path) {
@@ -511,19 +565,21 @@ new_project_calibration <- function(width, height) {
     origin = list(pixel_x = 0, pixel_y = height),
     x_axis_end = list(pixel_x = width, pixel_y = height),
     xy_axis_end = list(pixel_x = width, pixel_y = 0),
-    y_axis_end = list(pixel_x = 0, pixel_y = 0),
-    x_min = 0, x_max = 1,
-    y_min = 0, y_max = 1
-  )
-  axes <- list(
-    x1 = c(box$origin, value = 0, source = "box", fraction = 0),
-    x2 = c(box$x_axis_end, value = 1, source = "box", fraction = 1),
-    y1 = c(box$origin, value = 0, source = "box", fraction = 0),
-    y2 = c(box$y_axis_end, value = 1, source = "box", fraction = 1)
+    y_axis_end = list(pixel_x = 0, pixel_y = 0)
   )
   parse_projective_calibration(
-    list(calibration_box = box, calibration_axes = axes),
-    c("pixel_x", "pixel_y")
+    list(
+      format = project_format,
+      axis_names = list(x_axis = "x", y_axis = "y"),
+      box_points = box,
+      axis_points = list(
+        x1 = list(pixel_x = 0, value = 0),
+        x2 = list(pixel_x = width, value = 1),
+        y1 = list(pixel_y = height, value = 0),
+        y2 = list(pixel_y = 0, value = 1)
+      )
+    ),
+    c("pixel_x", "pixel_y", "x", "y")
   )
 }
 
@@ -576,18 +632,18 @@ series_from_metadata <- function(value) {
   if (is.null(value) || !length(value)) return(empty_series())
   item_names <- names(value)
   if (is.null(item_names) || any(!nzchar(item_names))) {
-    stop("groups 메타데이터의 그룹 명칭을 읽을 수 없습니다")
+    stop("display_styles 메타데이터의 그룹 명칭을 읽을 수 없습니다")
   }
   rows <- lapply(seq_along(value), function(index) {
     item <- value[[index]]
-    required <- c("marker", "color", "size", "alpha")
+    required <- c("symbol", "color", "size", "alpha")
     if (!all(required %in% names(item))) {
-      stop("groups 메타데이터의 필드를 확인하세요")
+      stop("display_styles 메타데이터의 필드를 확인하세요")
     }
     data.frame(
       id = index,
       name = item_names[index],
-      marker = as.character(item$marker),
+      marker = as.character(item$symbol),
       color = as.character(item$color),
       size = as.numeric(item$size),
       alpha = as.numeric(item$alpha),
@@ -612,19 +668,20 @@ format_yaml_number <- function(value) {
   format(value, scientific = FALSE, trim = TRUE, digits = 15)
 }
 
-serialize_project_metadata <- function(source_image, calibration, series) {
+serialize_project_metadata <- function(
+    source_image, image_width, image_height, calibration, series) {
   if (anyDuplicated(series$name)) stop("그룹 명칭이 중복되어 저장할 수 없습니다")
   number <- format_yaml_number
   axis_lines <- vapply(c("x1", "x2", "y1", "y2"), function(name) {
     point <- calibration$axis_points[[name]]
+    coordinate <- if (startsWith(name, "x")) "pixel_x" else "pixel_y"
     sprintf(
-      "  %s: {pixel_x: %s, pixel_y: %s, value: %s, source: %s, fraction: %s}",
-      name, number(point$pixel_x), number(point$pixel_y), number(point$value),
-      yaml_quote(point$source), number(point$fraction)
+      "  %s: {%s: %s, value: %s}",
+      name, coordinate, number(point[[coordinate]]), number(point$value)
     )
   }, character(1))
 
-  corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
+  corner_names <- c("origin", "x_axis_end", "y_axis_end", "xy_axis_end")
   corner_lines <- vapply(corner_names, function(name) {
     point <- calibration$box[[name]]
     sprintf(
@@ -632,17 +689,12 @@ serialize_project_metadata <- function(source_image, calibration, series) {
       name, number(point$pixel_x), number(point$pixel_y)
     )
   }, character(1))
-  setting_names <- setdiff(names(calibration$box), corner_names)
-  setting_lines <- vapply(setting_names, function(name) {
-    paste0("  ", name, ": ", number(calibration$box[[name]]))
-  }, character(1))
-
-  group_lines <- if (nrow(series)) {
+  style_lines <- if (nrow(series)) {
     vapply(seq_len(nrow(series)), function(index) {
       sprintf(
-        "  %s: {marker: %s, color: %s, size: %s, alpha: %s}",
+        "  %s: {symbol: %s, color: %s, size: %s, alpha: %s}",
         yaml_quote(series$name[index]),
-        yaml_quote(series$marker[index]), yaml_quote(series$color[index]),
+        number(series$marker[index]), yaml_quote(series$color[index]),
         number(series$size[index]), number(series$alpha[index])
       )
     }, character(1))
@@ -651,10 +703,24 @@ serialize_project_metadata <- function(source_image, calibration, series) {
   }
 
   c(
-    paste0("source_image: ", yaml_quote(basename(source_image))),
-    "calibration_axes:", axis_lines,
-    "calibration_box:", corner_lines, setting_lines,
-    if (length(group_lines)) c("groups:", group_lines) else "groups: {}"
+    paste0("format: ", yaml_quote(project_format)),
+    "source_image:",
+    paste0("  filename: ", yaml_quote(basename(source_image))),
+    sprintf(
+      "  size: {width: %s, height: %s}",
+      number(image_width), number(image_height)
+    ),
+    sprintf(
+      "axis_names: {x_axis: %s, y_axis: %s}",
+      yaml_quote(calibration$x$column), yaml_quote(calibration$y$column)
+    ),
+    "box_points:", corner_lines,
+    "axis_points:", axis_lines,
+    if (length(style_lines)) {
+      c("display_styles:", style_lines)
+    } else {
+      "display_styles: {}"
+    }
   )
 }
 
@@ -1414,7 +1480,8 @@ server <- function(input, output, session) {
     finalize_point_order()
     saved_series <- series_for_save(rv$series, rv$data)
     yaml_lines <- serialize_project_metadata(
-      rv$dataset$source_path, rv$calibration, saved_series
+      rv$dataset$source_path, rv$image_width, rv$image_height,
+      rv$calibration, saved_series
     )
 
     body <- rv$data
@@ -1879,6 +1946,17 @@ server <- function(input, output, session) {
 
     if (!is.null(project_path) && file.exists(project_path)) {
       metadata <- read_csv_metadata(project_path)
+      source_metadata <- source_image_metadata(metadata)
+      if (is.null(source_metadata) ||
+          !identical(source_metadata$filename, basename(dataset$source_path))) {
+        stop("원본 이미지 정보를 읽을 수 없습니다: ", project_path)
+      }
+      if (source_metadata$width != image_width || source_metadata$height != image_height) {
+        stop(sprintf(
+          "원본 이미지 크기가 프로젝트와 다릅니다: 저장 %dx%d, 현재 %dx%d",
+          source_metadata$width, source_metadata$height, image_width, image_height
+        ))
+      }
       saved_data <- read.csv(project_path, comment.char = "#", check.names = FALSE)
       required <- c("group", "pixel_x", "pixel_y")
       if (!all(required %in% names(saved_data))) {
@@ -1888,11 +1966,11 @@ server <- function(input, output, session) {
       if (is.null(saved_calibration)) {
         stop("축 설정을 읽을 수 없습니다: ", project_path)
       }
-      persisted_series <- series_from_metadata(metadata$groups)
+      persisted_series <- series_from_metadata(metadata$display_styles)
       data <- saved_data[required]
       group_rows <- match(as.character(data$group), persisted_series$name)
       if (anyNA(group_rows)) {
-        stop("CSV의 그룹 명칭을 groups 메타데이터에서 찾을 수 없습니다")
+        stop("CSV의 그룹 명칭을 display_styles 메타데이터에서 찾을 수 없습니다")
       }
       data$group <- persisted_series$id[group_rows]
       names(data)[names(data) == "group"] <- "series_id"
@@ -1907,7 +1985,7 @@ server <- function(input, output, session) {
       data$pixel_y <- as.numeric(data$pixel_y)
       if (anyDuplicated(data$point_id)) stop("point_id가 중복되어 있습니다")
       if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
-        stop("groups 메타데이터에 없는 그룹을 사용하는 포인트가 있습니다")
+        stop("display_styles 메타데이터에 없는 그룹을 사용하는 포인트가 있습니다")
       }
       saved_series <- restore_default_groups(persisted_series)
       calibration <- saved_calibration
