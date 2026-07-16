@@ -828,6 +828,33 @@ atomic_write_lines <- function(lines, path) {
   invisible(target_path)
 }
 
+read_file_bytes <- function(path) {
+  size <- file.info(path)$size
+  if (!is.finite(size)) stop("파일 크기를 확인할 수 없습니다: ", path)
+  readBin(path, what = "raw", n = size)
+}
+
+atomic_write_bytes <- function(bytes, path) {
+  target_dir <- normalizePath(dirname(path), mustWork = TRUE)
+  target_path <- file.path(target_dir, basename(path))
+  temp_path <- tempfile(
+    pattern = paste0(".", basename(path), "-"),
+    tmpdir = target_dir,
+    fileext = ".tmp"
+  )
+  on.exit(unlink(temp_path), add = TRUE)
+
+  connection <- file(temp_path, open = "wb")
+  tryCatch(
+    writeBin(bytes, connection),
+    finally = close(connection)
+  )
+  if (!file.rename(temp_path, target_path)) {
+    stop("임시 파일을 최종 CSV로 교체하지 못했습니다: ", target_path)
+  }
+  invisible(target_path)
+}
+
 box_point_display_labels <- c(
   origin = "원점", x_axis_end = "X 끝점",
   y_axis_end = "Y 끝점", xy_axis_end = "XY 끝점"
@@ -860,13 +887,11 @@ ui <- fluidPage(
       #folder-modal .sF-breadcrumps { display: none; }
       #folder-modal .folder-picker-breadcrumb { display: flex; align-items: center; gap: 5px; margin: 7px 0 2px; padding: 5px 8px; min-height: 30px; overflow-x: auto; white-space: nowrap; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 12px; }
       #folder-modal .folder-picker-separator { color: #777; }
-      .move-button-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 6px 0 9px; }
+      .move-button-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 6px 0 9px; }
       .calibration-move-button-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-      .move-button-row .btn { width: 100%; height: 36px; padding: 3px; font-size: 18px; border-radius: 4px; }
+      .move-button-row .btn { width: 100%; height: 34px; padding: 3px; font-size: 18px; border-radius: 4px; }
       .status-line { min-height: 22px; margin-top: 8px; font-size: 12px; }
       .status-line, .point-values, .status-line .shiny-text-output, .point-values .shiny-text-output { max-width: 100%; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
-      .save-name-options .form-group { margin: 8px 0 5px; }
-      .save-name-options .control-label { font-weight: 600; }
       .compact-control-row { display: grid; gap: 5px; align-items: center; margin-bottom: 9px; }
       .compact-control-row > *, .compact-control-row .shiny-input-container { min-width: 0; }
       .compact-control-row .shiny-input-container { width: 100% !important; margin: 0; }
@@ -874,7 +899,8 @@ ui <- fluidPage(
       .compact-control-row input, .compact-control-row select { height: 34px; padding: 4px 6px; }
       .point-section-title { display: block; margin: 3px 0 5px; font-weight: 600; }
       .point-select-input .shiny-input-container { width: 100% !important; margin-bottom: 6px; }
-      .point-action-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+      .point-action-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+      .point-action-row #add_point { grid-column: span 2; }
       .point-action-row .btn { width: 100%; height: 34px; padding: 5px 2px; border-radius: 4px; font-size: 12px; }
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
@@ -918,10 +944,28 @@ ui <- fluidPage(
       .zoom-option .control-label { font-weight: 600; }
       .move-point-option .form-control, .move-point-option .selectize-control { width: 100%; min-width: 0; }
       .move-step-option .shiny-options-group { text-align: right; white-space: nowrap; }
-      .save-actions { width: 100%; margin: 0; }
+      .save-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; width: 100%; margin: 0; }
       .save-actions .btn { display: block; width: 100%; }
-      .save-actions .btn + .btn { margin-top: 6px; }
-      .point-values { font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+      .save-actions .btn + .btn { margin-top: 0; }
+      .save-actions #save { grid-column: 1 / -1; }
+      .save-actions #save_options, .save-actions #restore_saved, .save-actions #reload { padding-right: 4px; padding-left: 4px; font-size: 12px; }
+      .save-option-file-info { margin-bottom: 20px; line-height: 1.65; }
+      .save-option-file-info > div { display: flex; align-items: baseline; gap: 4px; }
+      .save-option-file-info .save-option-label { flex: 0 0 auto; font-weight: 600; }
+      .save-option-modal .save-name-mode-options { width: 100% !important; max-width: none; margin-bottom: 8px; }
+      .save-name-option-row { display: flex; align-items: center; min-height: 34px; }
+      .save-name-option-row > .radio { flex: 0 0 auto; margin: 0; }
+      .save-name-option-row > .radio label { padding-top: 4px; padding-bottom: 4px; }
+      .save-option-inline-input { flex: 0 0 auto; margin-left: 6px; }
+      .save-option-inline-input .form-group { margin: 0; }
+      .save-option-inline-input input { height: 28px; padding: 3px 6px; }
+      .save-option-suffix-input { width: 158px; }
+      .save-option-filename-box { width: 100%; margin-top: 10px; }
+      .save-option-filename-box .form-group, .save-option-filename-box .shiny-input-container { width: 100% !important; max-width: none; margin: 0; }
+      .save-option-filename-box input { width: 100%; height: 34px; padding: 4px 8px; }
+      .save-option-filename-box input:disabled { background: #f3f3f3; color: #888; }
+      .point-values { min-height: 8.1em; margin: -2px 0 -3px; font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.35; }
+      .point-values .shiny-text-output { margin: 0; white-space: pre-wrap; }
       .plot-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
       .plot-stack { position: relative; height: calc(100vh - 82px); min-height: 420px; }
       .plot-stack .shiny-plot-output { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
@@ -1233,6 +1277,7 @@ ui <- fluidPage(
                 actionButton("next_point", "다음 ]", title = "다음 포인트 (])"),
                 actionButton("delete_point", "제거", title = "선택한 포인트 제거")
               ),
+              div(class = "point-values", textOutput("point_values")),
               tags$hr(class = "panel-divider"),
               div(class = "movement-section-title", "포인트 이동"),
               div(
@@ -1409,19 +1454,13 @@ ui <- fluidPage(
             choices = c(20, 40, 80), selected = 40, width = "100%"
           )
         ),
-        div(class = "point-values", textOutput("point_values")),
-        div(
-          class = "save-name-options",
-          radioButtons(
-            "save_name_mode", "저장 파일명",
-            choices = c("동일파일명.csv" = "same", "*-digitized.csv" = "digitized"),
-            selected = "same", inline = TRUE, width = "100%"
-          )
-        ),
+        tags$hr(class = "panel-divider"),
         div(
           class = "save-actions",
-          actionButton("save", "변경 저장", class = "btn-primary"),
-          actionButton("reload", "변경 취소")
+          actionButton("save", "파일 저장", class = "btn-primary"),
+          actionButton("save_options", "다른이름 저장"),
+          actionButton("restore_saved", "저장본 복귀"),
+          actionButton("reload", "변경 초기화")
         ),
         div(class = "status-line", textOutput("status"))
       )
@@ -1459,7 +1498,7 @@ server <- function(input, output, session) {
     calibration = NULL,
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
-    pending_cancel_mode = NULL, pending_series_edit = NULL,
+    pending_series_edit = NULL,
     point_dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
     calibration_undo = NULL,
     add_mode = FALSE, add_series = NULL,
@@ -1467,7 +1506,12 @@ server <- function(input, output, session) {
     updating_calibration_inputs = FALSE,
     calibration_target = NULL, calibration_point = NULL,
     active_edit_mode = "point", pending_edit_mode = NULL,
-    updating_edit_mode = FALSE
+    updating_edit_mode = FALSE,
+    save_name_mode = "current",
+    save_name_suffix = "-digitized",
+    save_name_custom = "",
+    initial_file_snapshot = NULL,
+    latest_saved_snapshot = NULL
   )
 
   mode_changes_pending <- function(mode) {
@@ -1532,13 +1576,39 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  save_path_for_dataset <- function(dataset) {
+  csv_name_stem <- function(value, label) {
+    value <- trimws(as.character(value))
+    if (!nzchar(value)) stop(label, "을 입력하세요")
+    if (grepl("[/\\\\]", value)) stop(label, "에는 폴더 경로를 입력할 수 없습니다")
+    value <- sub("\\.csv$", "", value, ignore.case = TRUE)
+    if (!nzchar(value)) stop(label, "을 입력하세요")
+    value
+  }
+
+  save_path_for_values <- function(dataset, mode, suffix, custom) {
     if (is.null(dataset) || is.null(dataset$source_path)) return(NULL)
-    if (!is.null(dataset$load_path)) return(dataset$load_path)
-    mode <- if (length(input$save_name_mode)) input$save_name_mode else "same"
-    source_stem <- tools::file_path_sans_ext(dataset$source_path)
-    if (identical(mode, "same")) return(paste0(source_stem, ".csv"))
-    paste0(source_stem, "-digitized.csv")
+    source_dir <- dirname(dataset$source_path)
+    source_stem <- tools::file_path_sans_ext(basename(dataset$source_path))
+    if (identical(mode, "current")) {
+      if (!is.null(dataset$load_path)) return(dataset$load_path)
+      return(file.path(source_dir, paste0(source_stem, ".csv")))
+    }
+    if (identical(mode, "suffix")) {
+      suffix <- csv_name_stem(suffix, "접미사")
+      return(file.path(source_dir, paste0(source_stem, suffix, ".csv")))
+    }
+    if (identical(mode, "custom")) {
+      custom <- csv_name_stem(custom, "파일이름")
+      return(file.path(source_dir, paste0(custom, ".csv")))
+    }
+    stop("저장 옵션을 선택하세요")
+  }
+
+  save_path_for_dataset <- function(dataset) {
+    save_path_for_values(
+      dataset, "current",
+      rv$save_name_suffix, rv$save_name_custom
+    )
   }
 
   relative_repo_path <- function(path) {
@@ -1551,30 +1621,35 @@ server <- function(input, output, session) {
   }
 
   update_save_name_inputs <- function(dataset) {
-    project_path <- dataset$load_path
-    mode <- "same"
-    if (!is.null(project_path)) {
-      source_stem <- tools::file_path_sans_ext(basename(dataset$source_path))
-      project_stem <- tools::file_path_sans_ext(basename(project_path))
-      loaded_postfix <- substring(project_stem, nchar(source_stem) + 1L)
-      if (nzchar(loaded_postfix)) mode <- "digitized"
-    }
-    freezeReactiveValue(input, "save_name_mode")
-    updateRadioButtons(session, "save_name_mode", selected = mode)
+    rv$save_name_mode <- "current"
+    rv$save_name_suffix <- "-digitized"
+    rv$save_name_custom <- tools::file_path_sans_ext(basename(
+      if (is.null(dataset$load_path)) dataset$source_path else dataset$load_path
+    ))
     invisible()
   }
 
-  save_changes <- function(auto = FALSE) {
-    if (is.null(rv$data) || is.null(rv$dataset) || !unsaved_changes_pending()) return(NULL)
-    save_path <- tryCatch(
-      save_path_for_dataset(rv$dataset),
-      error = function(error) {
-        rv$status <- conditionMessage(error)
-        NULL
-      }
-    )
+  save_changes <- function(auto = FALSE, target_path = NULL, force = FALSE) {
+    if (is.null(rv$data) || is.null(rv$dataset)) return(NULL)
+    if (!force && !unsaved_changes_pending()) return(NULL)
+    save_path <- if (is.null(target_path)) {
+      tryCatch(
+        save_path_for_dataset(rv$dataset),
+        error = function(error) {
+          rv$status <- conditionMessage(error)
+          NULL
+        }
+      )
+    } else {
+      target_path
+    }
     if (is.null(save_path)) return(NULL)
-    if (is.null(rv$dataset$load_path) && file.exists(save_path)) {
+    current_path <- rv$dataset$load_path
+    same_target <- !is.null(current_path) && identical(
+      normalizePath(save_path, mustWork = FALSE),
+      normalizePath(current_path, mustWork = FALSE)
+    )
+    if (!same_target && file.exists(save_path)) {
       rv$status <- paste0("같은 이름의 CSV가 이미 있습니다: ", basename(save_path))
       return(NULL)
     }
@@ -1615,6 +1690,7 @@ server <- function(input, output, session) {
     )
     if (!saved) return(NULL)
     saved_path <- normalizePath(save_path, mustWork = TRUE)
+    rv$latest_saved_snapshot <- read_file_bytes(saved_path)
     previous_key <- rv$dataset$key
     rv$dataset$key <- saved_path
     rv$dataset$load_path <- saved_path
@@ -1656,7 +1732,6 @@ server <- function(input, output, session) {
     rv$calibration_baseline <- NULL
     rv$series <- NULL
     rv$series_baseline <- NULL
-    rv$pending_cancel_mode <- NULL
     rv$pending_series_edit <- NULL
     rv$pending_edit_mode <- NULL
     rv$point_dirty <- FALSE
@@ -1666,6 +1741,8 @@ server <- function(input, output, session) {
     rv$add_mode <- FALSE
     rv$add_series <- NULL
     rv$selected <- NULL
+    rv$initial_file_snapshot <- NULL
+    rv$latest_saved_snapshot <- NULL
     rv$status <- ""
     updateSelectInput(session, "setting_series", choices = character(), selected = character())
     session$sendCustomMessage(
@@ -2042,7 +2119,7 @@ server <- function(input, output, session) {
   }
 
   update_edit_mode_controls <- function(mode) {
-    updateActionButton(session, "reload", label = "변경 취소")
+    updateActionButton(session, "reload", label = "변경 초기화")
     if (identical(mode, "calibration")) set_add_mode(FALSE)
     invisible()
   }
@@ -2062,7 +2139,7 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  load_dataset <- function(key) {
+  load_dataset <- function(key, reset_file_snapshots = TRUE) {
     req(key, key %in% names(catalog()))
     dataset <- catalog()[[key]]
     source_image <- png::readPNG(dataset$source_path)
@@ -2133,15 +2210,19 @@ server <- function(input, output, session) {
     rv$series <- series
     sort_points()
     capture_all_baselines()
-    rv$pending_cancel_mode <- NULL
     rv$pending_edit_mode <- NULL
     rv$calibration_target <- NULL
     rv$calibration_point <- NULL
     set_add_mode(FALSE)
     update_save_name_inputs(dataset)
+    if (reset_file_snapshots) {
+      snapshot <- if (loaded_project) read_file_bytes(project_path) else NULL
+      rv$initial_file_snapshot <- snapshot
+      rv$latest_saved_snapshot <- snapshot
+    }
     rv$status <- if (is.null(rv$pending_switch_status)) {
       if (loaded_project) {
-        paste("프로젝트 불러옴:", basename(project_path))
+        paste("파일 불러옴:", basename(project_path))
       } else {
         "새 디지타이징 프로젝트"
       }
@@ -2156,6 +2237,7 @@ server <- function(input, output, session) {
   observeEvent(input$dataset, {
     requested_key <- input$dataset
     req(nzchar(requested_key), requested_key %in% names(catalog()))
+    if (!is.null(rv$dataset) && identical(requested_key, rv$dataset$key)) return()
     if (!save_before_navigation()) {
       if (!is.null(rv$dataset)) {
         freezeReactiveValue(input, "dataset")
@@ -2881,42 +2963,86 @@ server <- function(input, output, session) {
   observeEvent(input$undo, undo_target())
   observeEvent(input$calibration_undo, undo_target())
 
-  observeEvent(input$reload, {
+  restore_file_snapshot <- function(snapshot, status) {
+    req(rv$dataset, rv$dataset$load_path, !is.null(snapshot))
+    project_path <- rv$dataset$load_path
+    project_key <- rv$dataset$key
+    restored <- tryCatch(
+      {
+        atomic_write_bytes(snapshot, project_path)
+        load_dataset(project_key, reset_file_snapshots = FALSE)
+        TRUE
+      },
+      error = function(error) {
+        rv$status <- paste0("파일 복원 실패: ", conditionMessage(error))
+        FALSE
+      }
+    )
+    if (restored) rv$status <- status
+    restored
+  }
+
+  observeEvent(input$restore_saved, {
     req(rv$dataset)
-    cancel_mode <- rv$active_edit_mode
-    mode_label <- edit_mode_label(cancel_mode)
-    has_changes <- mode_changes_pending(cancel_mode)
-    if (!has_changes) {
-      rv$status <- paste0("취소할 ", mode_label, " 변경이 없습니다")
+    if (is.null(rv$dataset$load_path) || is.null(rv$latest_saved_snapshot)) {
+      showModal(modalDialog(
+        title = "저장본 복귀",
+        "아직 파일로 저장된 상태가 없습니다.",
+        footer = modalButton("닫기"),
+        easyClose = TRUE
+      ))
       return()
     }
-    rv$pending_cancel_mode <- cancel_mode
     showModal(modalDialog(
-      title = paste0(mode_label, " 변경 취소"),
-      paste0(
-        "마지막 저장 또는 모드 전환 이후의 ", mode_label,
-        " 변경만 취소하시겠습니까? 다른 모드의 변경은 유지됩니다."
-      ),
+      title = "저장본 복귀",
+      "마지막 저장본으로 복귀하시겠습니까? 저장되지 않은 변경은 모두 사라집니다.",
       footer = tagList(
-        actionButton("cancel_reload", "아니오"),
-        actionButton("confirm_reload", "예", class = "btn-danger")
+        modalButton("취소"),
+        actionButton("confirm_restore_saved", "복귀", class = "btn-warning")
       ),
       easyClose = FALSE
     ))
   })
 
-  observeEvent(input$cancel_reload, {
+  observeEvent(input$confirm_restore_saved, {
     removeModal()
-    rv$pending_cancel_mode <- NULL
+    restore_file_snapshot(
+      rv$latest_saved_snapshot,
+      "마지막 저장본으로 복귀했습니다"
+    )
+  })
+
+  observeEvent(input$reload, {
+    req(rv$dataset)
+    if (is.null(rv$dataset$load_path) || is.null(rv$initial_file_snapshot)) {
+      showModal(modalDialog(
+        title = "변경 초기화",
+        "신규 파일에는 처음 불러온 CSV가 없어 변경 초기화를 사용할 수 없습니다.",
+        footer = modalButton("닫기"),
+        easyClose = TRUE
+      ))
+      return()
+    }
+    showModal(modalDialog(
+      title = "변경 초기화",
+      paste0(
+        "처음 불러온 CSV로 초기화하시겠습니까? ",
+        "현재 파일을 최초 상태로 덮어쓰며 이후 저장 내용과 저장되지 않은 변경이 모두 사라집니다."
+      ),
+      footer = tagList(
+        modalButton("취소"),
+        actionButton("confirm_reload", "초기화", class = "btn-danger")
+      ),
+      easyClose = FALSE
+    ))
   })
 
   observeEvent(input$confirm_reload, {
-    req(rv$dataset, rv$pending_cancel_mode)
-    cancel_mode <- rv$pending_cancel_mode
     removeModal()
-    discard_edit_mode_changes(cancel_mode)
-    rv$status <- paste0(edit_mode_label(cancel_mode), " 변경 취소됨")
-    rv$pending_cancel_mode <- NULL
+    restore_file_snapshot(
+      rv$initial_file_snapshot,
+      "처음 불러온 상태로 초기화했습니다"
+    )
   })
 
   toggle_add_point <- function() {
@@ -2996,7 +3122,7 @@ server <- function(input, output, session) {
     }
 
     if (!nrow(rv$data)) {
-      rv$status <- "그룹을 선택하고 + 버튼을 눌러 포인트를 추가하세요"
+      rv$status <- "포인트 연속추가 버튼을 눌러 포인트를 추가하세요"
       return()
     }
     distance <- (rv$data$pixel_x - input$overview_click$x)^2 +
@@ -3149,34 +3275,6 @@ server <- function(input, output, session) {
 
   output$point_values <- renderText({
     req(rv$data, rv$calibration)
-    if (active_mode_is("calibration")) {
-      req(rv$calibration$type == "projective")
-      if (identical(rv$calibration_target, "box")) {
-        req(rv$calibration_point)
-        point <- rv$calibration$box[[rv$calibration_point]]
-        return(sprintf(
-          "%s\npixel x: %s\npixel y: %s",
-          box_point_display_labels[[rv$calibration_point]],
-          format_pixel_coordinate(point$pixel_x),
-          format_pixel_coordinate(point$pixel_y)
-        ))
-      }
-      req(identical(rv$calibration_target, "axis"), rv$calibration_point)
-      point <- rv$calibration$axis_points[[rv$calibration_point]]
-      axis_name <- if (startsWith(rv$calibration_point, "x")) {
-        rv$calibration$x$column
-      } else {
-        rv$calibration$y$column
-      }
-      return(sprintf(
-        "%s\npixel x: %s\npixel y: %s\n%s: %s",
-        toupper(rv$calibration_point),
-        format_pixel_coordinate(point$pixel_x),
-        format_pixel_coordinate(point$pixel_y),
-        axis_name, format(as.numeric(point$value), digits = 7)
-      ))
-    }
-
     row <- selected_row()
     calibration <- rv$calibration
     values <- axis_values(rv$data, calibration)
@@ -3184,13 +3282,13 @@ server <- function(input, output, session) {
     group_name <- if (is.na(point_series_row)) "알 수 없음" else rv$series$name[point_series_row]
     group_number <- match(row, which(rv$data$series_id == rv$data$series_id[row]))
     sprintf(
-      "그룹: %s\n포인트 번호: %d-%d\npixel x: %s\npixel y: %s\n%s: %s\n%s: %s",
-      group_name,
+      "번호: %d-%d\n그룹: %s\n%s: %s\n%s: %s\npixel: (%s, %s)",
       rv$data$point_id[row], group_number,
-      format_pixel_coordinate(rv$data$pixel_x[row]),
-      format_pixel_coordinate(rv$data$pixel_y[row]),
+      group_name,
       calibration$x$column, format(values$x[row], digits = 7),
-      calibration$y$column, format(values$y[row], digits = 7)
+      calibration$y$column, format(values$y[row], digits = 7),
+      format_pixel_coordinate(rv$data$pixel_x[row]),
+      format_pixel_coordinate(rv$data$pixel_y[row])
     )
   })
 
@@ -3203,7 +3301,166 @@ server <- function(input, output, session) {
     if (identical(rv$calibration_target, "box")) "선택한 박스 포인트" else "선택한 축 포인트"
   })
 
+  output$save_name_resolved_box <- renderUI({
+    req(rv$dataset, input$save_name_mode_modal)
+    req(!identical(input$save_name_mode_modal, "custom"))
+    suffix <- if (length(input$save_name_suffix_modal)) {
+      input$save_name_suffix_modal
+    } else {
+      rv$save_name_suffix
+    }
+    filename <- tryCatch(
+      basename(save_path_for_values(
+        rv$dataset, input$save_name_mode_modal,
+        suffix, rv$save_name_custom
+      )),
+      error = function(error) ""
+    )
+    tags$input(
+      type = "text", class = "form-control",
+      value = filename, disabled = "disabled"
+    )
+  })
+
+  show_save_as_modal <- function() {
+    req(rv$dataset)
+    current_file <- if (is.null(rv$dataset$load_path)) {
+      "없음"
+    } else {
+      basename(rv$dataset$load_path)
+    }
+    current_name_label <- if (is.null(rv$dataset$load_path)) {
+      "기본 이름으로 저장"
+    } else {
+      "현재 이름으로 저장"
+    }
+    direct_file <- if (is.null(rv$dataset$load_path)) {
+      paste0(
+        tools::file_path_sans_ext(basename(rv$dataset$source_path)),
+        ".csv"
+      )
+    } else {
+      basename(rv$dataset$load_path)
+    }
+    save_mode_radio <- function(value, label) {
+      div(
+        class = "radio",
+        tags$label(
+          tags$input(
+            type = "radio", name = "save_name_mode_modal", value = value,
+            checked = if (identical(rv$save_name_mode, value)) "checked" else NULL
+          ),
+          tags$span(label)
+        )
+      )
+    }
+    showModal(modalDialog(
+      title = "다른 이름으로 저장",
+      div(
+        class = "save-option-modal",
+        div(
+          class = "save-option-file-info",
+          div(
+            span(class = "save-option-label", "그림 파일:"),
+            span(basename(rv$dataset$source_path))
+          ),
+          div(
+            span(class = "save-option-label", "현재 파일:"),
+            span(current_file)
+          )
+        ),
+        div(
+          id = "save_name_mode_modal",
+          class = paste(
+            "form-group shiny-input-radiogroup shiny-input-container",
+            "save-name-mode-options"
+          ),
+          div(
+            class = "shiny-options-group",
+            div(
+              class = "save-name-option-row",
+              save_mode_radio("current", current_name_label)
+            ),
+            div(
+              class = "save-name-option-row",
+              save_mode_radio("suffix", "파일이름에 접미사 추가"),
+              div(
+                class = "save-option-inline-input save-option-suffix-input",
+                textInput(
+                  "save_name_suffix_modal", NULL,
+                  value = rv$save_name_suffix, width = "100%"
+                )
+              )
+            ),
+            div(
+              class = "save-name-option-row",
+              save_mode_radio("custom", "파일이름 직접 입력")
+            )
+          )
+        ),
+        div(
+          class = "save-option-filename-box",
+          conditionalPanel(
+            condition = "input.save_name_mode_modal === 'custom'",
+            textInput(
+              "save_name_custom_modal", NULL,
+              value = direct_file, width = "100%"
+            )
+          ),
+          conditionalPanel(
+            condition = "input.save_name_mode_modal !== 'custom'",
+            uiOutput("save_name_resolved_box")
+          )
+        )
+      ),
+      footer = tagList(
+        modalButton("취소"),
+        actionButton("save_as", "저장", class = "btn-primary")
+      ),
+      easyClose = TRUE
+    ))
+  }
+
+  observeEvent(input$save_options, {
+    show_save_as_modal()
+  })
+
+  observeEvent(input$save_as, {
+    req(input$save_name_mode_modal %in% c("current", "suffix", "custom"))
+    suffix <- input$save_name_suffix_modal
+    custom <- input$save_name_custom_modal
+    save_path <- tryCatch(
+      save_path_for_values(
+        rv$dataset, input$save_name_mode_modal, suffix, custom
+      ),
+      error = function(error) {
+        showNotification(conditionMessage(error), type = "error")
+        NULL
+      }
+    )
+    if (is.null(save_path)) return()
+    mode <- input$save_name_mode_modal
+    if (identical(mode, "suffix")) {
+      rv$save_name_suffix <- csv_name_stem(suffix, "접미사")
+    }
+    if (identical(mode, "custom")) {
+      rv$save_name_custom <- csv_name_stem(custom, "파일이름")
+    }
+    saved <- save_changes(auto = FALSE, target_path = save_path, force = TRUE)
+    if (is.null(saved)) {
+      showNotification(rv$status, type = "error")
+      return()
+    }
+    rv$save_name_mode <- mode
+    removeModal()
+  })
+
   observeEvent(input$save, {
+    req(rv$dataset)
+    if (is.null(rv$dataset$load_path)) {
+      show_save_as_modal()
+      return()
+    }
     req(!is.null(save_changes(auto = FALSE)))
   })
 
