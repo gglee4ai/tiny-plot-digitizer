@@ -798,7 +798,7 @@ serialize_project_metadata <- function(
   )
 }
 
-atomic_write_lines <- function(lines, path) {
+atomic_replace <- function(path, write_temp) {
   target_dir <- normalizePath(dirname(path), mustWork = TRUE)
   target_path <- file.path(target_dir, basename(path))
   temp_path <- tempfile(
@@ -808,15 +808,21 @@ atomic_write_lines <- function(lines, path) {
   )
   on.exit(unlink(temp_path), add = TRUE)
 
-  connection <- file(temp_path, open = "wb")
-  tryCatch(
-    writeLines(lines, connection, useBytes = TRUE),
-    finally = close(connection)
-  )
+  write_temp(temp_path)
   if (!file.rename(temp_path, target_path)) {
     stop("임시 파일을 최종 CSV로 교체하지 못했습니다: ", target_path)
   }
   invisible(target_path)
+}
+
+atomic_write_lines <- function(lines, path) {
+  atomic_replace(path, function(temp_path) {
+    connection <- file(temp_path, open = "wb")
+    tryCatch(
+      writeLines(lines, connection, useBytes = TRUE),
+      finally = close(connection)
+    )
+  })
 }
 
 read_file_bytes <- function(path) {
@@ -826,24 +832,13 @@ read_file_bytes <- function(path) {
 }
 
 atomic_write_bytes <- function(bytes, path) {
-  target_dir <- normalizePath(dirname(path), mustWork = TRUE)
-  target_path <- file.path(target_dir, basename(path))
-  temp_path <- tempfile(
-    pattern = paste0(".", basename(path), "-"),
-    tmpdir = target_dir,
-    fileext = ".tmp"
-  )
-  on.exit(unlink(temp_path), add = TRUE)
-
-  connection <- file(temp_path, open = "wb")
-  tryCatch(
-    writeBin(bytes, connection),
-    finally = close(connection)
-  )
-  if (!file.rename(temp_path, target_path)) {
-    stop("임시 파일을 최종 CSV로 교체하지 못했습니다: ", target_path)
-  }
-  invisible(target_path)
+  atomic_replace(path, function(temp_path) {
+    connection <- file(temp_path, open = "wb")
+    tryCatch(
+      writeBin(bytes, connection),
+      finally = close(connection)
+    )
+  })
 }
 
 box_point_display_labels <- c(
