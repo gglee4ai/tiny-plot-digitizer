@@ -486,6 +486,36 @@ project_unit_to_pixels <- function(x_fraction, y_fraction, calibration) {
   )
 }
 
+axis_point_marker <- function(calibration, axis_point) {
+  if (startsWith(axis_point, "x")) {
+    if (identical(calibration$x$position, "top")) "triangle_down" else "triangle_up"
+  } else {
+    if (identical(calibration$y$position, "right")) "triangle_left" else "triangle_right"
+  }
+}
+
+draw_axis_point_marker <- function(x, y, marker, color, cex = 1.35) {
+  angles <- switch(
+    marker,
+    triangle_up = c(90, 210, 330),
+    triangle_right = c(0, 120, 240),
+    triangle_down = c(-90, 30, 150),
+    triangle_left = c(180, 300, 60)
+  )
+  if (is.null(angles)) return(invisible())
+
+  radius <- 0.055 * cex
+  x_scale <- diff(par("usr")[1:2]) / par("pin")[1]
+  y_scale <- diff(par("usr")[3:4]) / par("pin")[2]
+  radians <- angles * pi / 180
+  polygon(
+    x + radius * cos(radians) * x_scale,
+    y + radius * sin(radians) * y_scale,
+    border = color, col = color, xpd = NA
+  )
+  invisible()
+}
+
 draw_calibration_grid <- function(
   calibration, selected_box_point = NULL, selected_axis_point = NULL,
   box_only = FALSE
@@ -521,7 +551,11 @@ draw_calibration_grid <- function(
     point_color <- if (
       !is.null(selected_axis_point) && axis_points$axis_point[index] == selected_axis_point
     ) "#d62728" else "#1f5fbf"
-    points(x, y, pch = 18, col = point_color, cex = 1.70)
+    draw_axis_point_marker(
+      x, y,
+      marker = axis_point_marker(calibration, axis_points$axis_point[index]),
+      color = point_color
+    )
   }
 
   if (!is.null(selected_box_point) && selected_box_point %in% corner_points$corner) {

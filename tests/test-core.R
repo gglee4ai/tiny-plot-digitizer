@@ -25,6 +25,22 @@ expect_equal <- function(actual, expected, label, tolerance = 1e-8) {
 }
 
 calibration <- app$new_project_calibration(100, 100)
+expect_equal(
+  app$axis_point_marker(calibration, "x1"), "triangle_up", "하단 X축 마커 방향"
+)
+expect_equal(
+  app$axis_point_marker(calibration, "y1"), "triangle_right", "좌측 Y축 마커 방향"
+)
+opposite_axes <- calibration
+opposite_axes$x$position <- "top"
+opposite_axes$y$position <- "right"
+expect_equal(
+  app$axis_point_marker(opposite_axes, "x1"), "triangle_down", "상단 X축 마커 방향"
+)
+expect_equal(
+  app$axis_point_marker(opposite_axes, "y1"), "triangle_left", "우측 Y축 마커 방향"
+)
+
 boundary_points <- data.frame(
   pixel_x = c(-20, 50, 120),
   pixel_y = c(120, 50, -20)
