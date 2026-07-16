@@ -513,21 +513,6 @@ is_digitizing_project_file <- function(path, source_path) {
     !is.null(metadata$axis_points) && !is.null(metadata$display_styles)
 }
 
-latest_project_file <- function(source_path) {
-  source_stem <- tools::file_path_sans_ext(basename(source_path))
-  candidates <- list.files(
-    dirname(source_path), pattern = "\\.csv$", full.names = TRUE,
-    ignore.case = TRUE
-  )
-  candidate_stems <- tools::file_path_sans_ext(basename(candidates))
-  candidates <- candidates[startsWith(candidate_stems, source_stem)]
-  candidates <- candidates[vapply(
-    candidates, is_digitizing_project_file, logical(1), source_path = source_path
-  )]
-  if (!length(candidates)) return(NULL)
-  candidates[which.max(file.info(candidates)$mtime)]
-}
-
 discover_images <- function(folder_path) {
   files <- list.files(
     folder_path, pattern = "\\.png$", recursive = FALSE,
@@ -537,12 +522,38 @@ discover_images <- function(folder_path) {
     normalized <- normalizePath(path)
     list(
       source_path = normalized,
-      load_path = latest_project_file(normalized),
-      label = substring(normalized, nchar(normalizePath(folder_path)) + 2)
+      label = basename(normalized)
     )
   })
   keys <- vapply(images, `[[`, character(1), "source_path")
   setNames(images, keys)
+}
+
+discover_projects <- function(folder_path) {
+  files <- list.files(
+    folder_path, pattern = "\\.csv$", recursive = FALSE,
+    full.names = TRUE, ignore.case = TRUE
+  )
+  projects <- lapply(files, function(path) {
+    metadata <- try(read_csv_metadata(path), silent = TRUE)
+    if (inherits(metadata, "try-error")) return(NULL)
+    source_metadata <- source_image_metadata(metadata)
+    if (is.null(source_metadata)) return(NULL)
+    source_path <- file.path(folder_path, source_metadata$filename)
+    if (!file.exists(source_path) || !is_digitizing_project_file(path, source_path)) {
+      return(NULL)
+    }
+    project_path <- normalizePath(path)
+    list(
+      key = project_path,
+      source_path = normalizePath(source_path),
+      load_path = project_path,
+      label = basename(project_path)
+    )
+  })
+  projects <- Filter(Negate(is.null), projects)
+  keys <- vapply(projects, `[[`, character(1), "key")
+  setNames(projects, keys)
 }
 
 empty_points <- function() {
@@ -752,6 +763,7 @@ box_point_display_labels <- c(
 
 ui <- fluidPage(
   tags$head(
+    tags$title("Tiny Plot Digitizer 1.0"),
     tags$style(HTML("
       body { background: #f7f7f5; color: #202124; }
       .container-fluid { padding: 12px 18px; }
@@ -764,8 +776,15 @@ ui <- fluidPage(
       .editor-layout > .detail-column { padding-right: 0; }
       .control-panel { border-right: 1px solid #d8d8d4; padding-right: 18px; min-height: calc(100vh - 48px); }
       .form-group { margin-bottom: 10px; }
-      .folder-select-button { width: 100%; margin-bottom: 5px; }
-      .selected-folder-line { min-height: 20px; margin-bottom: 8px; font-size: 12px; overflow-wrap: anywhere; }
+      .project-source-group { margin-bottom: 9px; }
+      .project-source-title { margin-bottom: 4px; font-weight: 600; }
+      .project-source-control-row { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: 6px; align-items: center; }
+      .project-source-control-row > * { min-width: 0; }
+      .selected-folder-box { display: flex; align-items: center; height: 34px; padding: 4px 8px; overflow: hidden; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 13px; }
+      .selected-folder-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .project-source-control-row .btn { width: 100%; height: 34px; padding: 5px 4px; }
+      .project-source-control-row .form-group { width: 100%; margin: 0; }
+      .project-source-control-row select { width: 100%; height: 34px; padding: 4px 6px; }
       #folder-modal .sF-breadcrumps { display: none; }
       #folder-modal .folder-picker-breadcrumb { display: flex; align-items: center; gap: 5px; margin: 7px 0 2px; padding: 5px 8px; min-height: 30px; overflow-x: auto; white-space: nowrap; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 12px; }
       #folder-modal .folder-picker-separator { color: #777; }
@@ -1114,7 +1133,7 @@ ui <- fluidPage(
       folderModalObserver.observe(document.documentElement, {childList: true, subtree: true});
     "))
   ),
-  h3("Tiny Plot Digitizer"),
+  h3("Tiny Plot Digitizer 1.0"),
   fluidRow(
     class = "editor-layout",
     column(
@@ -1122,13 +1141,32 @@ ui <- fluidPage(
       class = "editor-column control-column",
       div(
         class = "control-panel",
-        shinyFiles::shinyDirButton(
-          "folder", "폴더 선택", "PNG가 있는 폴더를 선택하세요",
-          class = "folder-select-button"
+        div(
+          class = "project-source-group",
+          div(class = "project-source-title", "작업폴더"),
+          div(
+            class = "project-source-control-row",
+            div(
+              class = "selected-folder-box",
+              div(class = "selected-folder-line", textOutput("folder_path", inline = TRUE))
+            ),
+            shinyFiles::shinyDirButton(
+              "folder", "선택", "작업 폴더를 선택하세요"
+            )
+          )
         ),
-        div(class = "selected-folder-line", textOutput("folder_path", inline = TRUE)),
-        selectInput("dataset", "그림", choices = setNames("", "그림 선택"),
-                    selected = "", selectize = FALSE),
+        div(
+          class = "project-source-group",
+          div(class = "project-source-title", "작업파일"),
+          div(
+            class = "project-source-control-row",
+            selectInput(
+              "dataset", NULL, choices = setNames("", "CSV 파일 없음"),
+              selected = "", selectize = FALSE, width = "100%"
+            ),
+            actionButton("new_project", "신규")
+          )
+        ),
         div(
           class = "editor-tabs",
           tabsetPanel(
@@ -1436,8 +1474,23 @@ server <- function(input, output, session) {
     invisible()
   }
 
+  project_choices <- function(projects) {
+    if (!length(projects)) return(setNames("", "CSV 파일 없음"))
+    labels <- vapply(projects, `[[`, character(1), "label")
+    setNames(names(projects), labels)
+  }
+
+  update_project_input <- function(projects, selected = NULL, freeze = FALSE) {
+    choices <- project_choices(projects)
+    if (is.null(selected)) selected <- unname(choices[1])
+    if (freeze) freezeReactiveValue(input, "dataset")
+    updateSelectInput(session, "dataset", choices = choices, selected = selected)
+    invisible()
+  }
+
   save_path_for_dataset <- function(dataset) {
     if (is.null(dataset) || is.null(dataset$source_path)) return(NULL)
+    if (!is.null(dataset$load_path)) return(dataset$load_path)
     mode <- if (length(input$save_name_mode)) input$save_name_mode else "same"
     source_stem <- tools::file_path_sans_ext(dataset$source_path)
     if (identical(mode, "same")) return(paste0(source_stem, ".csv"))
@@ -1477,6 +1530,10 @@ server <- function(input, output, session) {
       }
     )
     if (is.null(save_path)) return(NULL)
+    if (is.null(rv$dataset$load_path) && file.exists(save_path)) {
+      rv$status <- paste0("같은 이름의 CSV가 이미 있습니다: ", basename(save_path))
+      return(NULL)
+    }
     finalize_point_order()
     saved_series <- series_for_save(rv$series, rv$data)
     yaml_lines <- serialize_project_metadata(
@@ -1513,12 +1570,19 @@ server <- function(input, output, session) {
       }
     )
     if (!saved) return(NULL)
-    rv$dataset$load_path <- save_path
+    saved_path <- normalizePath(save_path, mustWork = TRUE)
+    previous_key <- rv$dataset$key
+    rv$dataset$key <- saved_path
+    rv$dataset$load_path <- saved_path
+    rv$dataset$label <- basename(saved_path)
     current_catalog <- catalog()
-    dataset_key <- rv$dataset$source_path
-    if (dataset_key %in% names(current_catalog)) {
-      current_catalog[[dataset_key]]$load_path <- save_path
-      catalog(current_catalog)
+    if (!is.null(previous_key) && previous_key %in% names(current_catalog)) {
+      current_catalog[[previous_key]] <- NULL
+    }
+    current_catalog[[saved_path]] <- rv$dataset
+    catalog(current_catalog)
+    if (!auto) {
+      update_project_input(current_catalog, selected = saved_path, freeze = TRUE)
     }
     capture_all_baselines()
 
@@ -1573,21 +1637,16 @@ server <- function(input, output, session) {
 
   update_catalog <- function(folder_path, selected = NULL) {
     clear_dataset()
-    datasets <- discover_images(folder_path)
-    catalog(datasets)
-    if (length(datasets)) {
-      labels <- vapply(datasets, `[[`, character(1), "label")
-      choices <- setNames(names(datasets), labels)
-      if (is.null(selected)) selected <- unname(choices[1])
-    } else {
-      choices <- setNames("", "PNG 파일 없음")
+    projects <- discover_projects(folder_path)
+    catalog(projects)
+    if (!length(projects)) {
       selected <- ""
       if (!is.null(rv$pending_switch_status)) {
         rv$status <- rv$pending_switch_status
         rv$pending_switch_status <- NULL
       }
     }
-    updateSelectInput(session, "dataset", choices = choices, selected = selected)
+    update_project_input(projects, selected = selected)
   }
 
   folder_picker_target <- function(path) {
@@ -1621,7 +1680,7 @@ server <- function(input, output, session) {
   )
 
   output$folder_path <- renderText({
-    paste("선택 폴더:", basename(selected_folder()))
+    basename(selected_folder())
   })
 
   observeEvent(TRUE, {
@@ -1645,6 +1704,57 @@ server <- function(input, output, session) {
     update_folder_picker_target(folder_path)
     update_catalog(folder_path)
   }, ignoreInit = TRUE)
+
+  observeEvent(input$new_project, {
+    images <- discover_images(selected_folder())
+    if (!length(images)) {
+      showModal(modalDialog(
+        title = "신규 CSV 파일 제작",
+        "현재 작업 폴더에 PNG 파일이 없습니다.",
+        footer = modalButton("닫기"),
+        easyClose = TRUE
+      ))
+      return()
+    }
+    labels <- vapply(images, `[[`, character(1), "label")
+    showModal(modalDialog(
+      title = "신규 CSV 파일 제작",
+      selectInput(
+        "new_project_image", "그림 파일 선택",
+        choices = setNames(names(images), labels), selectize = FALSE,
+        width = "100%"
+      ),
+      footer = tagList(
+        modalButton("취소"),
+        actionButton("confirm_new_project", "선택", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  })
+
+  observeEvent(input$confirm_new_project, {
+    req(input$new_project_image)
+    source_path <- normalizePath(input$new_project_image, mustWork = TRUE)
+    if (!save_before_navigation()) return()
+    removeModal()
+
+    key <- paste0("new::", source_path)
+    dataset <- list(
+      key = key,
+      source_path = source_path,
+      load_path = NULL,
+      label = paste0("[신규] ", basename(source_path))
+    )
+    projects <- catalog()
+    if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
+        rv$dataset$key %in% names(projects)) {
+      projects[[rv$dataset$key]] <- NULL
+    }
+    projects[[key]] <- dataset
+    catalog(projects)
+    update_project_input(projects, selected = key, freeze = TRUE)
+    load_dataset(key)
+  })
 
   series_choices <- function() {
     if (is.null(rv$series) || !nrow(rv$series)) return(character())
@@ -2023,16 +2133,26 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$dataset, {
+    requested_key <- input$dataset
+    req(nzchar(requested_key), requested_key %in% names(catalog()))
     if (!save_before_navigation()) {
       if (!is.null(rv$dataset)) {
         freezeReactiveValue(input, "dataset")
         updateSelectInput(
-          session, "dataset", selected = rv$dataset$source_path
+          session, "dataset", selected = rv$dataset$key
         )
       }
       return()
     }
-    load_dataset(input$dataset)
+    projects <- catalog()
+    if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
+        !identical(rv$dataset$key, requested_key) &&
+        rv$dataset$key %in% names(projects)) {
+      projects[[rv$dataset$key]] <- NULL
+      catalog(projects)
+      update_project_input(projects, selected = requested_key, freeze = TRUE)
+    }
+    load_dataset(requested_key)
   })
 
   observeEvent(input$edit_mode, {
