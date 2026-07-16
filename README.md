@@ -1,79 +1,72 @@
-# Digitizing Point Editor
+# Tiny Plot Digitizer
 
-`data-raw`의 CSV에 저장된 디지타이징 포인트를 원본 그림 위에서 확인하고, 마커 중심과 Series를 보정하는 로컬 Shiny 앱입니다.
+Tiny Plot Digitizer는 그래프 이미지에서 데이터 포인트를 수동으로 추출하고, 좌표축과 표시 그룹을 함께 관리하는 로컬 Shiny 앱입니다.
+
+앱은 선택한 작업 폴더의 PNG 이미지와 Tiny Plot Digitizer CSV 파일을 직접 읽고 저장합니다. 데이터나 이미지는 외부 서버로 전송하지 않습니다.
+
+## 주요 기능
+
+- 투영된 사각형 그래프 영역과 선형·로그 축 설정
+- 여러 그룹의 이름, 색상, 심볼, 크기와 불투명도 관리
+- 포인트 연속 추가, 선택, 이동과 제거
+- 원본 이미지와 확대 화면을 이용한 0.5픽셀 단위 보정
+- CSV 안의 YAML 메타데이터와 변환 좌표 저장
+- 저장본 복귀와 최초 파일 상태 초기화
+
+## 요구 사항
+
+- R
+- R 패키지: `shiny`, `shinyFiles`, `png`, `yaml`
+
+필요한 패키지는 R에서 다음 명령으로 설치합니다.
+
+```r
+install.packages(c("shiny", "shinyFiles", "png", "yaml"))
+```
 
 ## 실행
 
-저장소 루트에서 다음 명령을 실행합니다.
+### macOS
+
+`Tiny Plot Digitizer.command`를 더블클릭합니다.
+
+터미널에서는 다음 명령으로 실행할 수 있습니다.
 
 ```sh
-Rscript tools/digitization-point-editor/run.R
+Rscript run.R
 ```
 
-기본 주소는 `http://127.0.0.1:8766`입니다. 다른 포트를 사용하려면 `DIGITIZER_PORT` 환경변수를 지정합니다.
+### Windows
 
-## PNG와 CSV의 매칭 기준
+`run.bat`을 더블클릭합니다. R이 기본 설치 폴더에 있거나 `Rscript.exe`가 PATH에 등록되어 있어야 합니다.
 
-앱은 파일명의 유사성으로 PNG와 CSV를 추측하지 않습니다. 먼저 `Folder (data-raw)`에서 작업 폴더를 선택하면, 해당 폴더 아래의 CSV를 재귀적으로 검색합니다. 각 CSV의 YAML 주석에 있는 `source_figure`를 우선 읽고, 구형 CSV에서는 `# Source figure:`를 읽어 원본 PNG를 찾습니다.
+### 환경변수
 
-현재 권장 형식은 원본 픽셀 좌표와 네 축 기준점을 보관하는 다음 형식입니다.
+- `DIGITIZER_FOLDER`: 처음 열 작업 폴더. 지정하지 않으면 홈 폴더에서 시작합니다.
+- `DIGITIZER_PORT`: 로컬 포트. 기본값은 `8766`입니다.
+- `DIGITIZER_BROWSER`: `false`로 지정하면 실행 시 브라우저를 자동으로 열지 않습니다.
+
+앱은 로컬 주소 `http://127.0.0.1:8766`에서 실행됩니다.
+
+## 기본 사용 순서
+
+1. **작업 폴더**에서 PNG와 CSV가 있는 폴더를 선택합니다.
+2. 기존 CSV를 선택하거나 **신규**에서 PNG를 선택합니다.
+3. **좌표설정** 탭에서 박스와 X·Y축을 지정합니다.
+4. **포인트** 탭에서 그룹을 선택하고 포인트를 추가·보정합니다.
+5. **파일 저장** 또는 **다른이름 저장**으로 CSV를 기록합니다.
+
+키보드 방향키는 선택된 포인트 또는 설정점을 이동합니다. 포인트 탭에서 `[`와 `]`는 이전·다음 포인트를 선택합니다.
+
+## 파일 구성
 
 ```text
-# ---
-# source_figure: 01_source_figure-1_yield_strength_vs_fluence.png
-# calibration_box:
-#   origin:
-#     pixel_x: 240
-#     pixel_y: 893
-#   x_axis_end:
-#     pixel_x: 1236
-#     pixel_y: 893
-#   xy_axis_end:
-#     pixel_x: 1236
-#     pixel_y: 97
-#   y_axis_end:
-#     pixel_x: 240
-#     pixel_y: 97
-#   fluence_min: 0
-#   fluence_max: 10
-#   YS_MPa_min: 0
-#   YS_MPa_max: 1100
-# ---
-source_figure,marker,test_temp_C,pixel_x,pixel_y
-Figure 1,circle,371,240,478
+tiny-plot-digitizer/
+├── app.R
+├── run.R
+├── Tiny Plot Digitizer.command
+├── run.bat
+└── README.md
 ```
 
-이 형식에서는 앱이 `calibration_box`를 이용해 현재 축값을 화면에 계산해서 보여주지만, 저장할 때는 `pixel_x`와 `pixel_y`만 수정합니다. 따라서 변환된 fluence나 물성값이 원본 디지타이징 CSV에 다시 기록되지 않습니다.
-
-다음과 같은 기존 선형 또는 로그 축 보정 주석도 계속 지원합니다.
-
-```text
-# Source figure: 02_source_figure-1_yield_strength_vs_fluence.png
-# Axis calibration on the source PNG: x = 58.5 + 209.0 * fluence; y = 658.642857 - 4.219643 * YS_ksi
-```
-
-`# Source figure:`의 경로는 CSV가 있는 폴더를 기준으로 해석합니다. 따라서 일반적으로 PNG와 CSV를 같은 폴더에 두고 PNG 파일명만 기록하면 됩니다. 서로 다른 폴더에 둘 경우에는 CSV 위치를 기준으로 한 상대경로를 기록할 수 있습니다.
-
-Figure 목록에 표시되려면 다음 조건을 모두 만족해야 합니다.
-
-- CSV에 YAML `source_figure` 또는 `# Source figure:` 주석이 있어야 합니다.
-- 지정된 PNG 파일이 실제로 존재해야 합니다.
-- CSV에 네 점을 가진 YAML `calibration_box`가 있거나 앱이 해석할 수 있는 `# Axis calibration ...:` 주석이 있어야 합니다.
-- `calibration_box` 형식에서는 CSV 본문에 `pixel_x`와 `pixel_y`가 있어야 합니다.
-- CSV 본문에 한 행 이상의 데이터가 있어야 합니다.
-
-CSV 본문의 `source_figure` 컬럼은 데이터의 출처 표시에 사용될 뿐 PNG 매칭에는 사용되지 않습니다. 하나의 PNG에서 여러 물성값을 디지타이징한 경우, 여러 CSV가 같은 PNG 파일을 가리킬 수도 있습니다.
-
-## 사용 방법
-
-1. `Folder (data-raw)`에서 작업 폴더를 선택합니다.
-2. `Figure`에서 수정할 CSV를 선택합니다.
-3. `Point` 목록이나 원본 그림의 마커를 선택합니다.
-4. 방향 버튼 또는 키보드 방향키로 선택한 포인트를 1 pixel씩 이동합니다.
-5. 다른 Folder 또는 Figure로 이동하면 변경한 픽셀 좌표가 자동으로 저장됩니다. 현재 화면에서 바로 저장하려면 `CSV 저장`을 누릅니다.
-
-`Series`는 그림 범례의 마커와 그 마커에 대응하는 온도·조사 조건을 한 묶음으로 표시합니다. 기존 포인트에 잘못 지정된 마커가 있으면 해당 포인트를 선택한 뒤 올바른 `Series`를 선택합니다. 마커와 연결된 조건도 함께 정정되므로 서로 맞지 않는 조합이 생기지 않습니다.
-
-새 포인트를 추가하려면 먼저 `Series`를 고르고 `+` 버튼을 누른 뒤 원본 그림에서 실제 마커 중심을 클릭합니다. 새 행은 해당 Series의 기존 조건을 복제하고, 클릭한 픽셀 좌표를 사용합니다. 추가 대기 중에는 `+` 버튼이 취소 버튼으로 바뀝니다. 선택한 포인트가 실제 그림에 없으면 휴지통 버튼을 누르고 삭제를 확인합니다.
-
-`[`와 `]`는 이전·다음 포인트를 선택합니다. `Shift+Left`와 `Shift+Right`도 같은 기능을 수행합니다. 가운데 되돌리기 버튼은 좌표 이동, Series 정정, 추가 또는 삭제 중 마지막 편집 작업 하나를 되돌립니다. `저장 전 변경 취소`를 누르면 현재 Figure에서 저장하지 않은 변경을 모두 버립니다. CSV 저장 시 YAML 주석과 수정하지 않은 행의 원문은 그대로 유지됩니다.
+R과 필수 패키지가 설치된 컴퓨터라면 이 폴더만 복사하여 독립적으로 실행할 수 있습니다.
