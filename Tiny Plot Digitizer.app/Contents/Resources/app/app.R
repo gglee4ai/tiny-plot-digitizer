@@ -1617,13 +1617,26 @@ ui <- fluidPage(
   )
 )
 
+default_working_folder <- function(
+  home_dir,
+  development_folder = file.path(
+    home_dir, "github", "R-RVI-2023", "data-raw", "2004_MRP79R1"
+  )
+) {
+  if (dir.exists(development_folder)) {
+    normalizePath(development_folder, mustWork = TRUE)
+  } else {
+    home_dir
+  }
+}
+
 server <- function(input, output, session) {
   home_dir <- normalizePath("~", mustWork = TRUE)
   configured_folder <- trimws(Sys.getenv("DIGITIZER_FOLDER", ""))
   initial_folder <- if (nzchar(configured_folder) && dir.exists(path.expand(configured_folder))) {
     normalizePath(path.expand(configured_folder), mustWork = TRUE)
   } else {
-    home_dir
+    default_working_folder(home_dir)
   }
   home_prefix <- paste0(home_dir, .Platform$file.sep)
   if (!identical(initial_folder, home_dir) && !startsWith(initial_folder, home_prefix)) {

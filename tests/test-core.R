@@ -25,6 +25,20 @@ expect_equal <- function(actual, expected, label, tolerance = 1e-8) {
 }
 
 calibration <- app$new_project_calibration(100, 100)
+folder_fixture <- tempfile("tiny-plot-digitizer-folder-")
+dir.create(folder_fixture)
+on.exit(unlink(folder_fixture, recursive = TRUE), add = TRUE)
+development_folder <- file.path(folder_fixture, "development")
+expect_equal(
+  app$default_working_folder(folder_fixture, development_folder),
+  folder_fixture, "개발 폴더가 없을 때 홈 폴더 기본값"
+)
+dir.create(development_folder)
+expect_equal(
+  app$default_working_folder(folder_fixture, development_folder),
+  normalizePath(development_folder), "개발 폴더 기본값"
+)
+
 expect_equal(
   app$axis_point_marker(calibration, "x1"), "triangle_up", "하단 X축 마커 방향"
 )
