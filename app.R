@@ -867,8 +867,8 @@ ui <- fluidPage(
       body { background: #f7f7f5; color: #202124; }
       .container-fluid { padding: 12px 18px; }
       .app-header { margin: 0 0 10px; }
-      .app-title { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.2; }
-      .app-subtitle { margin-top: 1px; text-align: right; font-size: 14px; line-height: 1.35; color: #555; }
+      .app-title { margin: 0; text-align: right; font-size: 20px; font-weight: 600; line-height: 1.2; }
+      .app-subtitle { margin-top: 1px; text-align: right; font-size: 12px; line-height: 1.35; color: #555; }
       .app-version { text-align: right; font-size: 12px; line-height: 1.35; color: #777; }
       h4 { margin: 12px 0 8px; font-size: 14px; font-weight: 600; }
       .editor-layout { display: grid; grid-template-columns: 300px minmax(0, 2fr) minmax(280px, 1fr); margin: 0; }
@@ -1218,7 +1218,7 @@ ui <- fluidPage(
           class = "app-header",
           h3(class = "app-title", "Tiny Plot Digitizer"),
           div(class = "app-subtitle", "A simple plot digitizing tool"),
-          div(class = "app-version", "Vers. 2026.07")
+          div(class = "app-version", "v2026.07")
         ),
         div(
           class = "project-source-group",
