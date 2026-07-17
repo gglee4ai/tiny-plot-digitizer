@@ -76,7 +76,7 @@ expect_equal(
   legacy_series$name, 'legacy: "series"', "구버전 CSV 그룹 헤더"
 )
 expect_equal(
-  legacy_series$color, "#1f77b4", "영문 그룹 색상 이름 읽기"
+  legacy_series$color, "#007AFF", "영문 그룹 색상 이름 읽기"
 )
 expect_error(
   app$group_color_value("#d62728"),

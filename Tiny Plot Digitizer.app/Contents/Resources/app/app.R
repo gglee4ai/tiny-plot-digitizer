@@ -671,24 +671,24 @@ draw_calibration_grid <- function(
 
   corners <- calibration_corners(calibration, close = TRUE)
   if (box_only) {
-    lines(corners$pixel_x, corners$pixel_y, col = "#1f5fbf", lwd = 1.4)
+    lines(corners$pixel_x, corners$pixel_y, col = "#304FFE", lwd = 1.4)
     return(invisible())
   }
 
   for (fraction in c(0.25, 0.5, 0.75)) {
     vertical <- project_unit_to_pixels(c(fraction, fraction), c(0, 1), calibration)
     horizontal <- project_unit_to_pixels(c(0, 1), c(fraction, fraction), calibration)
-    lines(vertical$pixel_x, vertical$pixel_y, col = "#4f81bd80", lwd = 0.8)
-    lines(horizontal$pixel_x, horizontal$pixel_y, col = "#4f81bd80", lwd = 0.8)
+    lines(vertical$pixel_x, vertical$pixel_y, col = "#304FFE80", lwd = 0.8)
+    lines(horizontal$pixel_x, horizontal$pixel_y, col = "#304FFE80", lwd = 0.8)
   }
 
-  lines(corners$pixel_x, corners$pixel_y, col = "#1f5fbf", lwd = 1.4)
+  lines(corners$pixel_x, corners$pixel_y, col = "#304FFE", lwd = 1.4)
   corner_points <- corners[seq_len(4), ]
   unselected_corners <- is.null(selected_box_point) |
     corner_points$corner != selected_box_point
   points(
     corner_points$pixel_x[unselected_corners], corner_points$pixel_y[unselected_corners],
-    pch = 16, col = "#1f5fbf", cex = 0.55
+    pch = 16, col = "#304FFE", cex = 0.55
   )
 
   axis_points <- calibration_axis_points(calibration)
@@ -697,7 +697,7 @@ draw_calibration_grid <- function(
     y <- axis_points$pixel_y[index]
     point_color <- if (
       !is.null(selected_axis_point) && axis_points$axis_point[index] == selected_axis_point
-    ) "#d62728" else "#1f5fbf"
+    ) "#FF0000" else "#304FFE"
     draw_axis_point_marker(
       x, y,
       marker = axis_point_marker(calibration, axis_points$axis_point[index]),
@@ -708,7 +708,7 @@ draw_calibration_grid <- function(
   if (!is.null(selected_box_point) && selected_box_point %in% corner_points$corner) {
     selected <- corner_points[corner_points$corner == selected_box_point, ]
     points(selected$pixel_x, selected$pixel_y,
-           pch = 16, col = "#d62728", cex = 0.7)
+           pch = 16, col = "#FF0000", cex = 0.7)
   }
 
   invisible()
@@ -896,8 +896,8 @@ series_marker_choices <- c(
 
 group_color_palette <- c(
   red = "#ff5a5f",
-  blue = "#1f77b4",
-  green = "#2ca02c",
+  blue = "#007AFF",
+  green = "#00C853",
   orange = "#ff7f0e",
   purple = "#9467bd",
   cyan = "#17becf"
@@ -5017,7 +5017,7 @@ server <- function(input, output, session) {
     if (is.null(row) || !length(row) || !nrow(rv$data)) return(invisible())
     points(
       rv$data$pixel_x[row], rv$data$pixel_y[row],
-      pch = 1, col = "#d62728", cex = cex, lwd = 2
+      pch = 1, col = "#FF0000", cex = cex, lwd = 2
     )
     invisible()
   }
