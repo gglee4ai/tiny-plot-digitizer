@@ -1412,6 +1412,55 @@ ui <- fluidPage(
       var latestZoomMarkerRequest = 0;
       var pendingZoomRecenterRequest = 0;
 
+      function zoomGuideRingRadius() {
+        var zoomRadius = Number(zoomMarkerState && zoomMarkerState.radius);
+        return zoomRadius > 0 ? 20 * 40 / zoomRadius : 20;
+      }
+
+      function styleZoomMarker() {
+        var guideRing = document.getElementById('zoom_marker_guide_ring');
+        var point = document.getElementById('zoom_marker_point');
+        var legacyPoint = document.getElementById('zoom_marker_legacy_point');
+        if (!guideRing || !point || !legacyPoint || !zoomMarkerState) return;
+        guideRing.setAttribute('r', zoomGuideRingRadius());
+        var extent = 7 * Number(zoomMarkerState.size || 1);
+        var marker = String(zoomMarkerState.marker || '1');
+        var simpleMarker = ['0', '1', '3', '4', '5'].includes(marker);
+        var path;
+        if (marker === '0') {
+          path = 'M ' + (-extent) + ' ' + (-extent) +
+            ' H ' + extent + ' V ' + extent + ' H ' + (-extent) + ' Z';
+        } else if (marker === '3') {
+          path = 'M ' + (-extent) + ' 0 H ' + extent +
+            ' M 0 ' + (-extent) + ' V ' + extent;
+        } else if (marker === '4') {
+          path = 'M ' + (-extent) + ' ' + (-extent) +
+            ' L ' + extent + ' ' + extent +
+            ' M ' + (-extent) + ' ' + extent +
+            ' L ' + extent + ' ' + (-extent);
+        } else if (marker === '5') {
+          path = 'M 0 ' + (-extent) + ' L ' + extent + ' 0' +
+            ' L 0 ' + extent + ' L ' + (-extent) + ' 0 Z';
+        } else if (marker === '1') {
+          path = 'M ' + (-extent) + ' 0' +
+            ' A ' + extent + ' ' + extent + ' 0 1 0 ' + extent + ' 0' +
+            ' A ' + extent + ' ' + extent + ' 0 1 0 ' + (-extent) + ' 0';
+        }
+        var alpha = Number(zoomMarkerState.alpha);
+        if (!Number.isFinite(alpha)) alpha = 1;
+        point.style.display = simpleMarker ? 'block' : 'none';
+        point.setAttribute('d', path);
+        point.setAttribute('stroke', zoomMarkerState.color || '#d62728');
+        point.setAttribute('stroke-opacity', alpha);
+        legacyPoint.style.display = simpleMarker ? 'none' : 'block';
+        legacyPoint.textContent = zoomMarkerState.glyph || '·';
+        legacyPoint.setAttribute('fill', zoomMarkerState.color || '#d62728');
+        legacyPoint.setAttribute('fill-opacity', alpha);
+        legacyPoint.setAttribute(
+          'font-size', 18 * Number(zoomMarkerState.size || 1)
+        );
+      }
+
       function positionZoomMarker() {
         var marker = document.getElementById('zoom_marker_glyph');
         var stack = document.querySelector('.zoom-plot-stack');
@@ -1432,9 +1481,10 @@ ui <- fluidPage(
           (Number(zoomMarkerState.center_x) - halfWidth)) * width / (2 * halfWidth);
         var y = (Number(zoomMarkerState.pixel_y) -
           (Number(zoomMarkerState.center_y) - halfHeight)) * height / (2 * halfHeight);
-        var markerPadding = 22;
+        var markerPadding = zoomGuideRingRadius() + 2;
         x = Math.max(markerPadding, Math.min(width - markerPadding, x));
         y = Math.max(markerPadding, Math.min(height - markerPadding, y));
+        styleZoomMarker();
         marker.setAttribute('transform', 'translate(' + x + ' ' + y + ')');
         marker.style.display = 'block';
       }
@@ -2014,16 +2064,18 @@ ui <- fluidPage(
           tags$g(
             id = "zoom_marker_glyph",
             tags$circle(
-              cx = 0, cy = 0, r = 20, fill = "none",
-              stroke = "#d62728", `stroke-width` = 2
+              id = "zoom_marker_guide_ring", cx = 0, cy = 0, r = 20,
+              fill = "none",
+              stroke = "#FF0000", `stroke-width` = 2
             ),
-            tags$line(
-              x1 = -6, y1 = 0, x2 = 6, y2 = 0,
-              stroke = "#d62728", `stroke-width` = 2
+            tags$path(
+              id = "zoom_marker_point", fill = "none",
+              `stroke-width` = 1.5, `stroke-linecap` = "round",
+              `stroke-linejoin` = "round"
             ),
-            tags$line(
-              x1 = 0, y1 = -6, x2 = 0, y2 = 6,
-              stroke = "#d62728", `stroke-width` = 2
+            tags$text(
+              id = "zoom_marker_legacy_point", x = 0, y = 0, dy = ".35em",
+              `text-anchor` = "middle", `font-family` = "sans-serif"
             )
           )
         )
@@ -3393,6 +3445,16 @@ server <- function(input, output, session) {
       session$sendCustomMessage("set-zoom-marker", list(visible = FALSE))
       return()
     }
+    point_row <- match(point_id, rv$data$point_id)
+    style_row <- if (is.na(point_row)) {
+      NA_integer_
+    } else {
+      match(rv$data$series_id[point_row], rv$series$id)
+    }
+    if (is.na(style_row)) {
+      session$sendCustomMessage("set-zoom-marker", list(visible = FALSE))
+      return()
+    }
     session$sendCustomMessage("set-zoom-marker", list(
       visible = TRUE,
       point_id = point_id,
@@ -3403,6 +3465,11 @@ server <- function(input, output, session) {
       radius = radius,
       image_width = rv$image_width,
       image_height = rv$image_height,
+      marker = rv$series$marker[style_row],
+      glyph = marker_glyph(rv$series$marker[style_row]),
+      color = rv$series$color[style_row],
+      size = rv$series$size[style_row],
+      alpha = rv$series$alpha[style_row],
       request_id = rv$zoom_marker_request_id
     ))
   })
