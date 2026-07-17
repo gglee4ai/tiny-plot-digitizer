@@ -220,6 +220,46 @@ expect_equal(
   "투영변환 Y좌표 왕복"
 )
 
+first_transforms <- app$projective_transforms(projective_calibration$box)
+second_transforms <- app$projective_transforms(projective_calibration$box)
+if (!identical(first_transforms, second_transforms)) {
+  stop("동일한 박스의 투영변환 계수를 재사용하지 못했습니다", call. = FALSE)
+}
+changed_calibration <- projective_calibration
+changed_calibration$box$origin$pixel_x <- 11
+changed_transforms <- app$projective_transforms(changed_calibration$box)
+if (identical(first_transforms, changed_transforms)) {
+  stop("변경된 박스의 투영변환 계수를 다시 계산하지 못했습니다", call. = FALSE)
+}
+
+native_image_path <- system.file("img", "Rlogo.png", package = "png")
+native_image <- png::readPNG(native_image_path, native = TRUE)
+native_crop <- app$crop_raster(native_image, 1:10, 1:12)
+if (!inherits(native_crop, "nativeRaster") ||
+    !identical(attr(native_crop, "channels"), attr(native_image, "channels"))) {
+  stop("PNG 잘라내기에서 nativeRaster 형식을 유지하지 못했습니다", call. = FALSE)
+}
+expect_equal(dim(native_crop), c(10L, 12L), "nativeRaster 잘라내기 크기")
+expected_crop <- as.raster(png::readPNG(native_image_path))[1:10, 1:12, drop = FALSE]
+render_raster <- function(image, path) {
+  grDevices::png(path, width = 120, height = 100)
+  tryCatch({
+    par(mar = c(0, 0, 0, 0))
+    plot.new()
+    plot.window(c(0, 1), c(0, 1), xaxs = "i", yaxs = "i")
+    rasterImage(image, 0, 0, 1, 1, interpolate = FALSE)
+  }, finally = grDevices::dev.off())
+}
+native_render_path <- tempfile(fileext = ".png")
+expected_render_path <- tempfile(fileext = ".png")
+on.exit(unlink(c(native_render_path, expected_render_path)), add = TRUE)
+render_raster(native_crop, native_render_path)
+render_raster(expected_crop, expected_render_path)
+expect_equal(
+  png::readPNG(native_render_path), png::readPNG(expected_render_path),
+  "nativeRaster 잘라내기 화면 결과", tolerance = 0
+)
+
 second_style <- app$group_style_defaults(2L)
 series <- rbind(
   app$default_groups(),

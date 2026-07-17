@@ -146,16 +146,35 @@ read_csv_metadata <- function(path) {
   parse_project_header(metadata_lines)
 }
 
-project_pixels_to_unit <- function(pixel_x, pixel_y, calibration_box) {
-  if (length(pixel_x) != length(pixel_y)) {
-    stop("pixel_x와 pixel_y의 길이가 서로 다릅니다", call. = FALSE)
-  }
+solve_projective_coefficients <- function(source_points, target_points) {
+  corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
+  projective_matrix <- matrix(0, nrow = 8, ncol = 8)
+  projective_target <- as.vector(t(target_points))
 
+  for (index in seq_along(corner_names)) {
+    x <- source_points[index, 1]
+    y <- source_points[index, 2]
+    u <- target_points[index, 1]
+    v <- target_points[index, 2]
+    projective_matrix[2 * index - 1L, ] <- c(
+      x, y, 1, 0, 0, 0, -u * x, -u * y
+    )
+    projective_matrix[2 * index, ] <- c(
+      0, 0, 0, x, y, 1, -v * x, -v * y
+    )
+  }
+  solve(projective_matrix, projective_target)
+}
+
+projective_transform_cache <- new.env(parent = emptyenv())
+projective_transform_cache$key <- NULL
+projective_transform_cache$value <- NULL
+
+projective_transforms <- function(calibration_box) {
   corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
   if (!all(corner_names %in% names(calibration_box))) {
     stop("박스 설정에 네 모서리 좌표가 필요합니다", call. = FALSE)
   }
-
   pixel_corners <- t(vapply(
     corner_names,
     function(corner) {
@@ -166,28 +185,43 @@ project_pixels_to_unit <- function(pixel_x, pixel_y, calibration_box) {
     },
     numeric(2)
   ))
+  cache_key <- as.vector(t(pixel_corners))
+  if (identical(projective_transform_cache$key, cache_key)) {
+    return(projective_transform_cache$value)
+  }
   unit_corners <- rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1))
-  projective_matrix <- matrix(0, nrow = 8, ncol = 8)
-  projective_target <- as.vector(t(unit_corners))
+  value <- list(
+    pixel_to_unit = solve_projective_coefficients(pixel_corners, unit_corners),
+    unit_to_pixel = solve_projective_coefficients(unit_corners, pixel_corners)
+  )
+  projective_transform_cache$key <- cache_key
+  projective_transform_cache$value <- value
+  value
+}
 
-  for (index in seq_len(4)) {
-    x <- pixel_corners[index, 1]
-    y <- pixel_corners[index, 2]
-    u <- unit_corners[index, 1]
-    v <- unit_corners[index, 2]
-    projective_matrix[2 * index - 1, ] <- c(x, y, 1, 0, 0, 0, -u * x, -u * y)
-    projective_matrix[2 * index, ] <- c(0, 0, 0, x, y, 1, -v * x, -v * y)
+apply_projective_transform <- function(first, second, coefficients, column_names) {
+  denominator <- coefficients[7] * first + coefficients[8] * second + 1
+  result <- data.frame(
+    first = (
+      coefficients[1] * first + coefficients[2] * second + coefficients[3]
+    ) / denominator,
+    second = (
+      coefficients[4] * first + coefficients[5] * second + coefficients[6]
+    ) / denominator
+  )
+  names(result) <- column_names
+  result
+}
+
+project_pixels_to_unit <- function(pixel_x, pixel_y, calibration_box) {
+  if (length(pixel_x) != length(pixel_y)) {
+    stop("pixel_x와 pixel_y의 길이가 서로 다릅니다", call. = FALSE)
   }
 
-  projective <- solve(projective_matrix, projective_target)
-  denominator <- projective[7] * pixel_x + projective[8] * pixel_y + 1
-  data.frame(
-    x_fraction = (
-      projective[1] * pixel_x + projective[2] * pixel_y + projective[3]
-    ) / denominator,
-    y_fraction = (
-      projective[4] * pixel_x + projective[5] * pixel_y + projective[6]
-    ) / denominator
+  apply_projective_transform(
+    pixel_x, pixel_y,
+    projective_transforms(calibration_box)$pixel_to_unit,
+    c("x_fraction", "y_fraction")
   )
 }
 
@@ -347,6 +381,22 @@ axis_values <- function(data, calibration) {
   }
   y <- interpolate_axis_values(position$y_fraction, calibration$y)
   data.frame(x = x, y = y)
+}
+
+crop_raster <- function(image, rows, columns) {
+  if (!inherits(image, "nativeRaster")) {
+    return(image[rows, columns, drop = FALSE])
+  }
+  width <- dim(image)[2]
+  indices <- unlist(lapply(
+    rows,
+    function(row) (as.integer(row) - 1L) * width + as.integer(columns)
+  ), use.names = FALSE)
+  crop <- as.vector(image)[indices]
+  dim(crop) <- c(length(rows), length(columns))
+  class(crop) <- "nativeRaster"
+  attr(crop, "channels") <- attr(image, "channels")
+  crop
 }
 
 calibration_corners <- function(calibration, close = FALSE) {
@@ -572,32 +622,14 @@ rename_calibration_axis <- function(calibration, axis, new_name) {
 }
 
 project_unit_to_pixels <- function(x_fraction, y_fraction, calibration) {
-  corner_names <- c("origin", "x_axis_end", "xy_axis_end", "y_axis_end")
-  unit_corners <- matrix(c(0, 0, 1, 0, 1, 1, 0, 1), ncol = 2, byrow = TRUE)
-  pixel_corners <- calibration_corners(calibration)
-  system <- matrix(0, nrow = 8, ncol = 8)
-  response <- numeric(8)
-
-  for (index in seq_along(corner_names)) {
-    u <- unit_corners[index, 1]
-    v <- unit_corners[index, 2]
-    x <- pixel_corners$pixel_x[index]
-    y <- pixel_corners$pixel_y[index]
-    system[2 * index - 1, ] <- c(u, v, 1, 0, 0, 0, -x * u, -x * v)
-    system[2 * index, ] <- c(0, 0, 0, u, v, 1, -y * u, -y * v)
-    response[2 * index - 1] <- x
-    response[2 * index] <- y
+  if (length(x_fraction) != length(y_fraction)) {
+    stop("x_fraction과 y_fraction의 길이가 서로 다릅니다", call. = FALSE)
   }
 
-  projective <- solve(system, response)
-  denominator <- projective[7] * x_fraction + projective[8] * y_fraction + 1
-  data.frame(
-    pixel_x = (
-      projective[1] * x_fraction + projective[2] * y_fraction + projective[3]
-    ) / denominator,
-    pixel_y = (
-      projective[4] * x_fraction + projective[5] * y_fraction + projective[6]
-    ) / denominator
+  apply_projective_transform(
+    x_fraction, y_fraction,
+    projective_transforms(calibration$box)$unit_to_pixel,
+    c("pixel_x", "pixel_y")
   )
 }
 
@@ -1355,6 +1387,15 @@ ui <- fluidPage(
         }
       });
 
+      Shiny.addCustomMessageHandler('select-point', function(message) {
+        var element = document.getElementById('point');
+        if (!element) return;
+        var selected = message.selected == null ? '' : String(message.selected);
+        if (element.value === selected) return;
+        element.value = selected;
+        Shiny.setInputValue('point', selected || null, {priority: 'event'});
+      });
+
       Shiny.addCustomMessageHandler('set-add-mode-state', function(message) {
         var button = document.getElementById('add_point');
         if (button) button.classList.toggle('add-mode-active', Boolean(message.active));
@@ -1433,8 +1474,11 @@ ui <- fluidPage(
         if (directions[event.key]) {
           event.preventDefault();
           event.stopImmediatePropagation();
-          var movementButton = document.getElementById(directions[event.key]);
-          if (movementButton) movementButton.click();
+          Shiny.setInputValue('key_move', {
+            direction: directions[event.key],
+            start: !event.repeat,
+            nonce: Date.now() + Math.random()
+          }, {priority: 'event'});
           return;
         }
         var activeEditMode = document.querySelector(
@@ -1463,6 +1507,17 @@ ui <- fluidPage(
           return;
         }
       }, true);
+
+      function endKeyboardMovement() {
+        Shiny.setInputValue('key_move_end', Date.now() + Math.random(), {priority: 'event'});
+      }
+
+      document.addEventListener('keyup', function(event) {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        endKeyboardMovement();
+      }, true);
+
+      window.addEventListener('blur', endKeyboardMovement);
 
       $(document).on('shown.bs.modal', '.modal', function() {
         if (!document.getElementById('point_delete_modal_marker')) return;
@@ -1936,6 +1991,8 @@ server <- function(input, output, session) {
     point_dirty = FALSE, calibration_dirty = FALSE,
     add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_navigation = NULL,
+    point_order_dirty = FALSE,
+    movement_history_active = FALSE, movement_history_mode = NULL,
     updating_calibration_inputs = FALSE,
     calibration_target = NULL, calibration_point = NULL,
     active_edit_mode = "point", pending_edit_mode = NULL,
@@ -1974,11 +2031,11 @@ server <- function(input, output, session) {
     )
     if (identical(image_cache$key, cache_key)) return(image_cache$value)
 
-    source_image <- png::readPNG(normalized)
+    source_image <- png::readPNG(normalized, native = TRUE)
     value <- list(
       width = dim(source_image)[2],
       height = dim(source_image)[1],
-      raster_matrix = as.matrix(as.raster(source_image))
+      raster_matrix = source_image
     )
     image_cache$key <- cache_key
     image_cache$value <- value
@@ -2237,6 +2294,9 @@ server <- function(input, output, session) {
     rv$add_mode <- FALSE
     rv$add_series <- NULL
     rv$selected <- NULL
+    rv$point_order_dirty <- FALSE
+    rv$movement_history_active <- FALSE
+    rv$movement_history_mode <- NULL
     rv$initial_file_snapshot <- NULL
     rv$latest_saved_snapshot <- NULL
     rv$disk_file_snapshot <- NULL
@@ -2589,7 +2649,12 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  point_label <- function(row, values = axis_values(rv$data, rv$calibration)) {
+  point_label <- function(row, values = NULL) {
+    value_row <- row
+    if (is.null(values)) {
+      values <- axis_values(rv$data[row, , drop = FALSE], rv$calibration)
+      value_row <- 1L
+    }
     style_row <- match(rv$data$series_id[row], rv$series$id)
     if (is.na(style_row)) {
       series_label <- paste("그룹", rv$data$series_id[row])
@@ -2598,8 +2663,8 @@ server <- function(input, output, session) {
     }
     group_rows <- which(rv$data$series_id == rv$data$series_id[row])
     group_number <- match(row, group_rows)
-    x_value <- format(round(values$x[row], 3), scientific = FALSE, trim = TRUE)
-    y_value <- format(round(values$y[row], 3), scientific = FALSE, trim = TRUE)
+    x_value <- format(round(values$x[value_row], 3), scientific = FALSE, trim = TRUE)
+    y_value <- format(round(values$y[value_row], 3), scientific = FALSE, trim = TRUE)
     sprintf(
       "%d-%d %s X: %s Y: %s",
       rv$data$point_id[row], group_number, series_label,
@@ -2635,6 +2700,16 @@ server <- function(input, output, session) {
         selected = if (length(selected_id)) selected_id else NULL
       )
     )
+    invisible()
+  }
+
+  update_point_selection <- function() {
+    selected_id <- if (!is.null(rv$data) && !is.null(rv$selected) && nrow(rv$data)) {
+      as.character(rv$data$point_id[rv$selected])
+    } else {
+      NULL
+    }
+    session$sendCustomMessage("select-point", list(selected = selected_id))
     invisible()
   }
 
@@ -2738,11 +2813,32 @@ server <- function(input, output, session) {
       series = rv$series,
       selected_point_id = selected_point_id(),
       selected_series_id = selected_series_id,
-      point_dirty = isTRUE(rv$point_dirty)
+      point_dirty = isTRUE(rv$point_dirty),
+      point_order_dirty = isTRUE(rv$point_order_dirty)
     )
   }
 
+  begin_movement_history <- function() {
+    rv$movement_history_active <- TRUE
+    rv$movement_history_mode <- NULL
+    invisible()
+  }
+
+  end_movement_history <- function() {
+    rv$movement_history_active <- FALSE
+    rv$movement_history_mode <- NULL
+    invisible()
+  }
+
+  should_record_movement_history <- function(mode) {
+    if (!isTRUE(rv$movement_history_active)) return(TRUE)
+    if (identical(rv$movement_history_mode, mode)) return(FALSE)
+    rv$movement_history_mode <- mode
+    TRUE
+  }
+
   remember_point_change <- function() {
+    if (!should_record_movement_history("point")) return(invisible())
     rv$point_history <- append_history(rv$point_history, point_state_snapshot())
     rv$point_redo <- list()
     invisible()
@@ -2752,6 +2848,7 @@ server <- function(input, output, session) {
     rv$data <- snapshot$data
     rv$series <- snapshot$series
     rv$point_dirty <- isTRUE(snapshot$point_dirty)
+    rv$point_order_dirty <- isTRUE(snapshot$point_order_dirty)
     rv$selected <- if (!is.null(snapshot$selected_point_id) && nrow(rv$data)) {
       match(as.integer(snapshot$selected_point_id), rv$data$point_id)
     } else {
@@ -2788,6 +2885,7 @@ server <- function(input, output, session) {
   }
 
   remember_calibration_change <- function() {
+    if (!should_record_movement_history("calibration")) return(invisible())
     rv$calibration_history <- append_history(
       rv$calibration_history, calibration_state_snapshot()
     )
@@ -2834,6 +2932,7 @@ server <- function(input, output, session) {
       calibration_baseline = rv$calibration_baseline,
       point_dirty = isTRUE(rv$point_dirty),
       calibration_dirty = isTRUE(rv$calibration_dirty),
+      point_order_dirty = isTRUE(rv$point_order_dirty),
       selected_point_id = selected_point_id(),
       active_edit_mode = rv$active_edit_mode,
       calibration_target = rv$calibration_target,
@@ -2898,6 +2997,11 @@ server <- function(input, output, session) {
     rv$calibration_baseline <- draft$calibration_baseline
     rv$point_dirty <- isTRUE(draft$point_dirty)
     rv$calibration_dirty <- isTRUE(draft$calibration_dirty)
+    rv$point_order_dirty <- if (is.null(draft$point_order_dirty)) {
+      TRUE
+    } else {
+      isTRUE(draft$point_order_dirty)
+    }
     rv$point_history <- list()
     rv$point_redo <- list()
     rv$calibration_history <- list()
@@ -2996,6 +3100,7 @@ server <- function(input, output, session) {
   sort_points <- function(selected_point_id = NULL) {
     if (!nrow(rv$data)) {
       rv$selected <- NULL
+      rv$point_order_dirty <- FALSE
       return(invisible())
     }
     values <- axis_values(rv$data, rv$calibration)
@@ -3006,11 +3111,18 @@ server <- function(input, output, session) {
     if (!is.null(selected_point_id)) {
       rv$selected <- match(as.integer(selected_point_id), rv$data$point_id)
     }
+    rv$point_order_dirty <- FALSE
     invisible()
   }
 
+  ensure_point_order <- function(selected_point_id = NULL) {
+    if (!isTRUE(rv$point_order_dirty)) return(FALSE)
+    sort_points(selected_point_id)
+    TRUE
+  }
+
   finalize_point_order <- function(point_id = selected_point_id()) {
-    sort_points(point_id)
+    ensure_point_order(point_id)
     update_point_choices()
     invisible()
   }
@@ -3034,6 +3146,7 @@ server <- function(input, output, session) {
       selected <- if (is.null(rv$selected)) 1L else rv$selected
       rv$data <- rv$point_baseline_data
       rv$series <- rv$series_baseline
+      rv$point_order_dirty <- FALSE
       capture_mode_baseline("point")
       set_add_mode(FALSE)
       refresh_controls(if (nrow(rv$data)) min(selected, nrow(rv$data)) else NULL)
@@ -3789,27 +3902,29 @@ server <- function(input, output, session) {
     row
   })
 
-  select_point <- function(row) {
+  select_point <- function(row, rebuild_choices = FALSE) {
     row <- max(1L, min(as.integer(row), nrow(rv$data)))
     rv$selected <- row
-    update_point_choices()
+    if (rebuild_choices) update_point_choices() else update_point_selection()
     group_id <- as.character(rv$data$series_id[row])
-    refresh_series_choices(group_id)
+    if (!identical(as.character(input$setting_series), group_id)) {
+      refresh_series_choices(group_id)
+    }
   }
 
   select_point_id <- function(point_id, finalize_order = TRUE) {
     point_id <- as.integer(point_id)
-    if (finalize_order) sort_points(point_id)
+    rebuild_choices <- finalize_order && ensure_point_order(point_id)
     row <- match(point_id, rv$data$point_id)
-    if (!is.na(row)) select_point(row)
+    if (!is.na(row)) select_point(row, rebuild_choices = rebuild_choices)
   }
 
   navigate_point <- function(direction) {
     current_id <- selected_point_id()
-    sort_points(current_id)
+    rebuild_choices <- ensure_point_order(current_id)
     row <- selected_row()
     next_row <- if (direction == "previous") max(1, row - 1) else min(nrow(rv$data), row + 1)
-    select_point(next_row)
+    select_point(next_row, rebuild_choices = rebuild_choices)
   }
 
   navigate_series <- function(direction) {
@@ -3818,10 +3933,11 @@ server <- function(input, output, session) {
       return(invisible(FALSE))
     }
     current_id <- selected_point_id()
-    sort_points(current_id)
+    rebuild_choices <- ensure_point_order(current_id)
     row <- selected_row()
     current_series_position <- match(rv$data$series_id[row], rv$series$id)
     if (is.na(current_series_position)) {
+      if (rebuild_choices) update_point_choices()
       rv$status <- "현재 포인트의 그룹을 확인할 수 없습니다"
       return(invisible(FALSE))
     }
@@ -3841,10 +3957,11 @@ server <- function(input, output, session) {
     for (position in candidate_positions) {
       target_rows <- which(rv$data$series_id == rv$series$id[position])
       if (length(target_rows)) {
-        select_point(target_rows[1])
+        select_point(target_rows[1], rebuild_choices = rebuild_choices)
         return(invisible(TRUE))
       }
     }
+    if (rebuild_choices) update_point_choices()
     direction_label <- if (identical(direction, "previous")) "이전" else "다음"
     rv$status <- paste0(direction_label, " 그룹에 포인트가 없습니다")
     invisible(FALSE)
@@ -3882,6 +3999,7 @@ server <- function(input, output, session) {
         identical(data$pixel_y[row], rv$data$pixel_y[row])) return(invisible(FALSE))
     remember_point_change()
     rv$data <- data
+    rv$point_order_dirty <- TRUE
     mark_mode_changed("point")
     update_point_label(row)
     invisible(TRUE)
@@ -3898,6 +4016,7 @@ server <- function(input, output, session) {
     remember_point_change()
     rv$data$pixel_x[row] <- pixel_x
     rv$data$pixel_y[row] <- pixel_y
+    rv$point_order_dirty <- TRUE
     mark_mode_changed("point", status)
     update_point_label(row)
     invisible(TRUE)
@@ -3909,6 +4028,7 @@ server <- function(input, output, session) {
     }
     remember_calibration_change()
     rv$calibration <- calibration
+    rv$point_order_dirty <- TRUE
     mark_mode_changed("calibration", status)
     update_point_choices()
     TRUE
@@ -4056,12 +4176,34 @@ server <- function(input, output, session) {
     set_calibration_box_point(rv$calibration_point, pixel_x, pixel_y)
   }
 
-  observeEvent(input$left, move_target("left"))
-  observeEvent(input$right, move_target("right"))
-  observeEvent(input$up, move_target("up"))
-  observeEvent(input$down, move_target("down"))
+  observeEvent(input$left, {
+    end_movement_history()
+    move_target("left")
+  })
+  observeEvent(input$right, {
+    end_movement_history()
+    move_target("right")
+  })
+  observeEvent(input$up, {
+    end_movement_history()
+    move_target("up")
+  })
+  observeEvent(input$down, {
+    end_movement_history()
+    move_target("down")
+  })
+
+  observeEvent(input$key_move, {
+    direction <- as.character(input$key_move$direction)
+    req(direction %in% c("left", "right", "up", "down"))
+    if (isTRUE(input$key_move$start)) begin_movement_history()
+    move_target(direction)
+  })
+
+  observeEvent(input$key_move_end, end_movement_history())
 
   undo_target <- function() {
+    end_movement_history()
     if (active_mode_is("calibration")) {
       if (!length(rv$calibration_history)) {
         rv$status <- "되돌릴 좌표설정 변경이 없습니다"
@@ -4096,6 +4238,7 @@ server <- function(input, output, session) {
   }
 
   redo_target <- function() {
+    end_movement_history()
     if (active_mode_is("calibration")) {
       if (!length(rv$calibration_redo)) {
         rv$status <- "다시 실행할 좌표설정 변경이 없습니다"
@@ -4219,7 +4362,7 @@ server <- function(input, output, session) {
     if (rv$add_mode) {
       point_id <- selected_point_id()
       set_add_mode(FALSE)
-      sort_points(point_id)
+      ensure_point_order(point_id)
       refresh_controls(rv$selected)
       rv$status <- unsaved_status()
     } else {
@@ -4243,15 +4386,15 @@ server <- function(input, output, session) {
       rv$series$name[point_series_row]
     }
     group_number <- match(row, which(rv$data$series_id == rv$data$series_id[row]))
-    values <- axis_values(rv$data, rv$calibration)
+    values <- axis_values(rv$data[row, , drop = FALSE], rv$calibration)
     rv$pending_point_delete <- list(
       point_id = rv$data$point_id[row],
       point_number = sprintf("%d-%d", rv$data$point_id[row], group_number),
       group_name = group_name,
       x_name = rv$calibration$x$column,
-      x_value = format(round(values$x[row], 3), scientific = FALSE, trim = TRUE),
+      x_value = format(round(values$x[1], 3), scientific = FALSE, trim = TRUE),
       y_name = rv$calibration$y$column,
-      y_value = format(round(values$y[row], 3), scientific = FALSE, trim = TRUE)
+      y_value = format(round(values$y[1], 3), scientific = FALSE, trim = TRUE)
     )
     showModal(modalDialog(
       title = "포인트 제거",
@@ -4333,6 +4476,7 @@ server <- function(input, output, session) {
       )
       rv$data <- rbind(rv$data, new_row)
       rv$selected <- nrow(rv$data)
+      rv$point_order_dirty <- TRUE
       mark_mode_changed(
         "point", "새 포인트가 추가되었습니다. 계속 추가하거나 연속입력 종료를 누르세요"
       )
@@ -4464,11 +4608,11 @@ server <- function(input, output, session) {
     x_right <- min(width, ceiling(xlim[2]))
     y_top <- max(0L, floor(ylim[2]))
     y_bottom <- min(height, ceiling(ylim[1]))
-    crop <- rv$raster_matrix[
+    crop <- crop_raster(
+      rv$raster_matrix,
       (y_top + 1L):y_bottom,
-      (x_left + 1L):x_right,
-      drop = FALSE
-    ]
+      (x_left + 1L):x_right
+    )
     rasterImage(crop, x_left, y_bottom, x_right, y_top)
     selected_box_point <- if (
       active_mode_is("calibration") && identical(rv$calibration_target, "box")
@@ -4512,7 +4656,7 @@ server <- function(input, output, session) {
     req(rv$data, rv$calibration)
     row <- selected_row()
     calibration <- rv$calibration
-    values <- axis_values(rv$data, calibration)
+    values <- axis_values(rv$data[row, , drop = FALSE], calibration)
     point_series_row <- match(rv$data$series_id[row], rv$series$id)
     group_name <- if (is.na(point_series_row)) "알 수 없음" else rv$series$name[point_series_row]
     group_number <- match(row, which(rv$data$series_id == rv$data$series_id[row]))
@@ -4520,8 +4664,8 @@ server <- function(input, output, session) {
       "번호: %d-%d\n그룹: %s\n%s: %s\n%s: %s\npixel: (%s, %s)",
       rv$data$point_id[row], group_number,
       group_name,
-      calibration$x$column, format(values$x[row], digits = 7),
-      calibration$y$column, format(values$y[row], digits = 7),
+      calibration$x$column, format(values$x[1], digits = 7),
+      calibration$y$column, format(values$y[1], digits = 7),
       format_pixel_coordinate(rv$data$pixel_x[row]),
       format_pixel_coordinate(rv$data$pixel_y[row])
     )

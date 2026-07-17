@@ -104,6 +104,7 @@ shiny::testServer(app$server, {
   session$setInputs(dataset = project_paths[1])
   session$flushReact()
   stopifnot(identical(rv$dataset$key, project_paths[1]))
+  expect_true(inherits(rv$raster_matrix, "nativeRaster"), "PNG nativeRaster 로딩")
 
   rv$point_dirty <- TRUE
   session$setInputs(dataset = project_paths[2])
@@ -207,6 +208,49 @@ shiny::testServer(app$server, {
   stopifnot(
     identical(loaded, TRUE),
     identical(rv$dataset$key, project_paths[2])
+  )
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1], move_step = 1)
+  session$flushReact()
+
+  original_x <- rv$data$pixel_x[rv$selected]
+  session$setInputs(key_move = list(direction = "left", start = TRUE, nonce = 1))
+  session$flushReact()
+  session$setInputs(key_move = list(direction = "left", start = FALSE, nonce = 2))
+  session$flushReact()
+  expect_true(
+    identical(length(rv$point_history), 1L),
+    "방향키 반복 이동 실행취소 기록 병합"
+  )
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], original_x - 2)),
+    "방향키 반복 이동 좌표 반영"
+  )
+
+  session$setInputs(key_move_end = 1)
+  session$flushReact()
+  session$setInputs(key_move = list(direction = "left", start = TRUE, nonce = 3))
+  session$flushReact()
+  expect_true(
+    identical(length(rv$point_history), 2L),
+    "다음 방향키 이동 실행취소 기록 분리"
+  )
+
+  undo_target()
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], original_x - 2)),
+    "두 번째 방향키 이동 실행취소"
+  )
+  undo_target()
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], original_x)),
+    "병합된 방향키 반복 이동 실행취소"
   )
 })
 
