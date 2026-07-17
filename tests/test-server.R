@@ -173,6 +173,65 @@ shiny::testServer(app$server, {
   session$setInputs(dataset = project_paths[1])
   session$flushReact()
 
+  first_group_point <- selected_point_id()
+  rv$data <- rbind(
+    rv$data,
+    data.frame(
+      point_id = c(8L, 9L), series_id = c(2L, 2L),
+      pixel_x = c(8, 2), pixel_y = c(5, 5)
+    )
+  )
+  sort_points(first_group_point)
+  refresh_controls(rv$selected)
+
+  session$setInputs(next_series = 1)
+  session$flushReact()
+  expect_true(identical(selected_point_id(), 9L), "다음 그룹 첫 포인트 이동")
+  session$setInputs(previous_series = 1)
+  session$flushReact()
+  expect_true(
+    identical(selected_point_id(), first_group_point),
+    "이전 그룹 첫 포인트 이동"
+  )
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
+  original_point_id <- selected_point_id()
+  original_count <- nrow(rv$data)
+  session$setInputs(delete_point = 1)
+  session$flushReact()
+  expect_true(
+    identical(rv$pending_point_delete$point_id, original_point_id),
+    "삭제 확인 대상 포인트"
+  )
+  expect_true(identical(nrow(rv$data), original_count), "확인 전 포인트 유지")
+
+  session$setInputs(cancel_point_delete = 1)
+  session$flushReact()
+  expect_true(is.null(rv$pending_point_delete), "삭제 취소 모달 상태 정리")
+  expect_true(identical(nrow(rv$data), original_count), "삭제 취소 포인트 유지")
+
+  session$setInputs(delete_point = 2)
+  session$flushReact()
+  session$setInputs(confirm_point_delete = 1)
+  session$flushReact()
+  expect_true(identical(nrow(rv$data), original_count - 1L), "포인트 삭제 확인")
+  expect_true(is.null(rv$pending_point_delete), "삭제 확인 모달 상태 정리")
+  expect_true(undo_target(), "포인트 삭제 Undo")
+  expect_true(original_point_id %in% rv$data$point_id, "포인트 삭제 Undo 상태")
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
   original_point_id <- selected_point_id()
   expect_true(identical(rv$data$series_id[rv$selected], 1L), "변경 전 포인트 그룹")
   session$setInputs(change_point_series = 1)

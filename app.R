@@ -1069,9 +1069,9 @@ ui <- fluidPage(
       .compact-control-row input, .compact-control-row select { height: 34px; padding: 4px 6px; }
       .point-section-title { display: block; margin: 3px 0 5px; font-weight: 600; }
       .point-select-input .shiny-input-container { width: 100% !important; margin-bottom: 6px; }
-      .point-action-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
-      .point-action-row #add_point, .point-action-row #change_point_series { grid-column: span 3; }
-      .point-action-row #previous_point, .point-action-row #next_point, .point-action-row #delete_point { grid-column: span 2; }
+      .point-action-row { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+      .point-action-row #add_point, .point-action-row #change_point_series, .point-action-row #delete_point { grid-column: span 4; }
+      .point-action-row #previous_series, .point-action-row #previous_point, .point-action-row #next_point, .point-action-row #next_series { grid-column: span 3; }
       .point-action-row .btn { width: 100%; height: 34px; padding: 5px 2px; border-radius: 4px; font-size: 12px; }
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
@@ -1268,6 +1268,22 @@ ui <- fluidPage(
         var editingField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
           (activeElement && activeElement.isContentEditable);
         if (editingField) return;
+        var pointDeleteModal = document.getElementById('point_delete_modal_marker');
+        if (pointDeleteModal) {
+          var deleteConfirm = event.code === 'KeyY';
+          var deleteCancel = event.code === 'KeyN' || event.key === 'Escape';
+          if (deleteConfirm || deleteCancel) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            var deleteModalButton = document.getElementById(
+              deleteConfirm ? 'confirm_point_delete' : 'cancel_point_delete'
+            );
+            if (deleteModalButton) deleteModalButton.click();
+          } else if (event.key === 'Delete' || event.key === 'Backspace') {
+            event.preventDefault();
+          }
+          return;
+        }
         var accelerator = event.metaKey || event.ctrlKey;
         var shortcutKey = event.key.toLowerCase();
         if (accelerator && (shortcutKey === 'z' || shortcutKey === 'y')) {
@@ -1291,6 +1307,14 @@ ui <- fluidPage(
         );
         var pointModeActive = activeEditMode &&
           activeEditMode.getAttribute('data-value') === 'point';
+        if (pointModeActive && !accelerator && !event.altKey &&
+            (event.key === 'Delete' || event.key === 'Backspace')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          var deleteButton = document.getElementById('delete_point');
+          if (deleteButton) deleteButton.click();
+          return;
+        }
         if (event.key === '[') {
           if (!pointModeActive) return;
           event.preventDefault();
@@ -1304,6 +1328,12 @@ ui <- fluidPage(
           return;
         }
       }, true);
+
+      $(document).on('shown.bs.modal', '.modal', function() {
+        if (!document.getElementById('point_delete_modal_marker')) return;
+        var cancelButton = document.getElementById('cancel_point_delete');
+        if (cancelButton) cancelButton.focus({preventScroll: true});
+      });
 
       function focusActiveMovementTarget() {
         window.setTimeout(function() {
@@ -1497,13 +1527,28 @@ ui <- fluidPage(
               ),
               div(
                 class = "point-action-row",
-                actionButton("add_point", "포인트 연속추가",
-                             title = "선택한 그룹에 포인트 연속 추가 시작"),
-                actionButton("change_point_series", "포인트 그룹변경",
+                actionButton("add_point", "연속입력",
+                             title = "선택한 그룹에 포인트 연속 입력 시작"),
+                actionButton("change_point_series", "그룹변경",
                              title = "선택한 포인트의 그룹 변경"),
-                actionButton("previous_point", "이전 [", title = "이전 포인트 ([)"),
-                actionButton("next_point", "다음 ]", title = "다음 포인트 (])"),
-                actionButton("delete_point", "제거", title = "선택한 포인트 제거")
+                actionButton(
+                  "delete_point", "제거",
+                  title = "선택한 포인트 제거 (Delete/Backspace)"
+                ),
+                actionButton(
+                  "previous_series", "이전그룹",
+                  title = "이전 그룹의 첫 번째 포인트"
+                ),
+                actionButton(
+                  "next_series", "다음그룹",
+                  title = "다음 그룹의 첫 번째 포인트"
+                ),
+                actionButton(
+                  "previous_point", "이전 [", title = "이전 포인트 ([)"
+                ),
+                actionButton(
+                  "next_point", "다음 ]", title = "다음 포인트 (])"
+                )
               ),
               div(class = "point-values", textOutput("point_values"))
             ),
@@ -1750,6 +1795,7 @@ server <- function(input, output, session) {
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
     pending_series_edit = NULL, pending_point_series_change = NULL,
+    pending_point_delete = NULL,
     point_dirty = FALSE, calibration_dirty = FALSE,
     add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_navigation = NULL,
@@ -2448,7 +2494,7 @@ server <- function(input, output, session) {
     rv$add_series <- if (active) as.integer(series) else NULL
     updateActionButton(
       session, "add_point",
-      label = if (active) "연속추가 종료" else "포인트 연속추가",
+      label = if (active) "연속입력 종료" else "연속입력",
       icon = NULL
     )
     session$sendCustomMessage("set-add-mode-state", list(active = isTRUE(active)))
@@ -3195,7 +3241,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$change_point_series, {
     if (rv$add_mode) {
-      rv$status <- "포인트 연속추가를 종료한 후 그룹을 변경하세요"
+      rv$status <- "연속입력을 종료한 후 그룹을 변경하세요"
       return()
     }
     if (is.null(rv$selected) || is.null(rv$data) || !nrow(rv$data)) {
@@ -3542,8 +3588,48 @@ server <- function(input, output, session) {
     select_point(next_row)
   }
 
+  navigate_series <- function(direction) {
+    if (is.null(rv$selected) || is.null(rv$data) || !nrow(rv$data)) {
+      rv$status <- "이동할 포인트를 선택하세요"
+      return(invisible(FALSE))
+    }
+    current_id <- selected_point_id()
+    sort_points(current_id)
+    row <- selected_row()
+    current_series_position <- match(rv$data$series_id[row], rv$series$id)
+    if (is.na(current_series_position)) {
+      rv$status <- "현재 포인트의 그룹을 확인할 수 없습니다"
+      return(invisible(FALSE))
+    }
+    candidate_positions <- if (identical(direction, "previous")) {
+      if (current_series_position > 1L) {
+        seq.int(current_series_position - 1L, 1L)
+      } else {
+        integer()
+      }
+    } else {
+      if (current_series_position < nrow(rv$series)) {
+        seq.int(current_series_position + 1L, nrow(rv$series))
+      } else {
+        integer()
+      }
+    }
+    for (position in candidate_positions) {
+      target_rows <- which(rv$data$series_id == rv$series$id[position])
+      if (length(target_rows)) {
+        select_point(target_rows[1])
+        return(invisible(TRUE))
+      }
+    }
+    direction_label <- if (identical(direction, "previous")) "이전" else "다음"
+    rv$status <- paste0(direction_label, " 그룹에 포인트가 없습니다")
+    invisible(FALSE)
+  }
+
+  observeEvent(input$previous_series, navigate_series("previous"), ignoreInit = TRUE)
   observeEvent(input$previous_point, navigate_point("previous"), ignoreInit = TRUE)
   observeEvent(input$next_point, navigate_point("next"), ignoreInit = TRUE)
+  observeEvent(input$next_series, navigate_series("next"), ignoreInit = TRUE)
   observeEvent(input$key_point_nav, {
     if (!active_mode_is("point")) return()
     navigate_point(input$key_point_nav)
@@ -3926,6 +4012,67 @@ server <- function(input, output, session) {
       return()
     }
     row <- selected_row()
+    point_series_row <- series_row(rv$data$series_id[row])
+    group_name <- if (is.na(point_series_row)) {
+      paste("그룹", rv$data$series_id[row])
+    } else {
+      rv$series$name[point_series_row]
+    }
+    group_number <- match(row, which(rv$data$series_id == rv$data$series_id[row]))
+    values <- axis_values(rv$data, rv$calibration)
+    rv$pending_point_delete <- list(
+      point_id = rv$data$point_id[row],
+      point_number = sprintf("%d-%d", rv$data$point_id[row], group_number),
+      group_name = group_name,
+      x_name = rv$calibration$x$column,
+      x_value = format(round(values$x[row], 3), scientific = FALSE, trim = TRUE),
+      y_name = rv$calibration$y$column,
+      y_value = format(round(values$y[row], 3), scientific = FALSE, trim = TRUE)
+    )
+    showModal(modalDialog(
+      title = "포인트 제거",
+      tags$div(id = "point_delete_modal_marker"),
+      tags$p(tags$strong("포인트: "), rv$pending_point_delete$point_number),
+      tags$p(tags$strong("그룹: "), rv$pending_point_delete$group_name),
+      tags$p(
+        tags$strong(paste0(rv$pending_point_delete$x_name, ": ")),
+        rv$pending_point_delete$x_value
+      ),
+      tags$p(
+        tags$strong(paste0(rv$pending_point_delete$y_name, ": ")),
+        rv$pending_point_delete$y_value
+      ),
+      tags$div(
+        class = "alert alert-warning",
+        "이 포인트를 제거하시겠습니까? 이 작업은 실행 취소할 수 있습니다."
+      ),
+      footer = tagList(
+        actionButton("cancel_point_delete", "N 취소"),
+        actionButton("confirm_point_delete", "Y 제거", class = "btn-danger")
+      ),
+      easyClose = FALSE,
+      size = "s"
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$cancel_point_delete, {
+    removeModal()
+    rv$pending_point_delete <- NULL
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$confirm_point_delete, {
+    pending <- rv$pending_point_delete
+    if (is.null(pending)) {
+      removeModal()
+      return()
+    }
+    row <- match(as.integer(pending$point_id), rv$data$point_id)
+    if (is.na(row)) {
+      removeModal()
+      rv$pending_point_delete <- NULL
+      rv$status <- "제거할 포인트를 찾을 수 없습니다"
+      return()
+    }
     remember_point_change()
     rv$data <- rv$data[-row, , drop = FALSE]
     next_point_id <- if (nrow(rv$data)) {
@@ -3934,9 +4081,13 @@ server <- function(input, output, session) {
       NULL
     }
     sort_points(next_point_id)
-    mark_mode_changed("point", "포인트가 제거되었습니다")
+    mark_mode_changed(
+      "point", paste0("포인트 ", pending$point_number, "이(가) 제거되었습니다")
+    )
     set_add_mode(FALSE)
     refresh_controls(rv$selected)
+    removeModal()
+    rv$pending_point_delete <- NULL
   }, ignoreInit = TRUE)
 
   observeEvent(input$overview_click, {
@@ -3960,14 +4111,14 @@ server <- function(input, output, session) {
       rv$data <- rbind(rv$data, new_row)
       rv$selected <- nrow(rv$data)
       mark_mode_changed(
-        "point", "새 포인트가 추가되었습니다. 계속 추가하거나 연속추가 종료를 누르세요"
+        "point", "새 포인트가 추가되었습니다. 계속 추가하거나 연속입력 종료를 누르세요"
       )
       refresh_controls(rv$selected)
       return()
     }
 
     if (!nrow(rv$data)) {
-      rv$status <- "포인트 연속추가 버튼을 눌러 포인트를 추가하세요"
+      rv$status <- "연속입력 버튼을 눌러 포인트를 추가하세요"
       return()
     }
     distance <- (rv$data$pixel_x - input$overview_click$x)^2 +
@@ -3983,7 +4134,7 @@ server <- function(input, output, session) {
       return()
     }
     if (rv$add_mode) {
-      rv$status <- "포인트 연속추가는 원본 이미지에서 진행하세요"
+      rv$status <- "연속입력은 원본 이미지에서 진행하세요"
       return()
     }
     set_selected_point_position(
