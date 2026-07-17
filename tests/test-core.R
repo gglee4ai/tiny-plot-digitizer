@@ -51,6 +51,24 @@ expect_equal(
   normalizePath(development_folder), "개발 폴더 기본값"
 )
 
+special_header_value <- '그룹: "A", C:\\plots'
+expect_equal(
+  app$decode_project_header_string(
+    app$quote_project_header(special_header_value)
+  ),
+  special_header_value, "CSV 헤더 특수 문자열 왕복"
+)
+
+other_metadata_path <- file.path(folder_fixture, "other-metadata.csv")
+writeLines(c(
+  "# ---", '# title: "다른 형식"', "# nested:", "#   value: 1",
+  "# ---", "value", "1"
+), other_metadata_path)
+expect_equal(
+  length(app$read_csv_metadata(other_metadata_path)), 0L,
+  "다른 형식의 메타데이터 헤더 무시"
+)
+
 picker_root <- file.path(folder_fixture, "picker-root")
 visible_folder <- file.path(picker_root, "Visible")
 hidden_folder <- file.path(picker_root, ".hidden")

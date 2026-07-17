@@ -1,4 +1,4 @@
-required_packages <- c("shiny", "png", "yaml")
+required_packages <- c("shiny", "png")
 missing_packages <- required_packages[!vapply(
   required_packages, requireNamespace, logical(1), quietly = TRUE
 )]
@@ -16,19 +16,122 @@ if (length(missing_packages)) {
 
 library(shiny)
 
+decode_project_header_string <- function(text) {
+  expression <- try(parse(text = text, keep.source = FALSE), silent = TRUE)
+  if (inherits(expression, "try-error") || length(expression) != 1L ||
+      !is.character(expression[[1]]) || length(expression[[1]]) != 1L) {
+    stop("CSV 설정 정보의 문자열 형식을 확인하세요")
+  }
+  expression[[1]]
+}
+
+parse_project_header_key <- function(text) {
+  text <- trimws(text)
+  key <- if (startsWith(text, '"')) {
+    decode_project_header_string(text)
+  } else {
+    if (!grepl("^[A-Za-z_][A-Za-z0-9_]*$", text)) {
+      stop("CSV 설정 정보의 항목 이름을 확인하세요")
+    }
+    text
+  }
+  if (!nzchar(key)) stop("CSV 설정 정보에 빈 항목 이름이 있습니다")
+  key
+}
+
+parse_project_header_scalar <- function(text) {
+  text <- trimws(text)
+  if (startsWith(text, '"')) return(decode_project_header_string(text))
+  number_pattern <- paste0(
+    "^[+-]?(?:[0-9]+(?:[.][0-9]*)?|[.][0-9]+)",
+    "(?:[eE][+-]?[0-9]+)?$"
+  )
+  if (grepl(number_pattern, text, perl = TRUE)) return(as.numeric(text))
+  if (grepl("^[A-Za-z][A-Za-z0-9_.-]*$", text)) return(text)
+  stop("CSV 설정 정보에 지원하지 않는 값이 있습니다")
+}
+
+split_project_header_pair <- function(text) {
+  pattern <- paste0(
+    '^("(?:\\\\.|[^"\\\\])*"|[A-Za-z_][A-Za-z0-9_]*):',
+    "[[:space:]]*(.*)$"
+  )
+  fields <- regmatches(text, regexec(pattern, trimws(text), perl = TRUE))[[1]]
+  if (length(fields) != 3L) stop("CSV 설정 정보의 항목 구분자를 확인하세요")
+  list(key = parse_project_header_key(fields[[2]]), value = fields[[3]])
+}
+
+parse_project_header_value <- function(text) {
+  text <- trimws(text)
+  if (identical(text, "{}")) return(list())
+  if (startsWith(text, "{") && substr(text, nchar(text), nchar(text)) == "}") {
+    content <- trimws(substr(text, 2L, nchar(text) - 1L))
+    if (!nzchar(content)) return(list())
+    fields <- strsplit(content, ",[[:space:]]*", perl = TRUE)[[1]]
+    values <- lapply(fields, function(field) {
+      pair <- split_project_header_pair(field)
+      list(key = pair$key, value = parse_project_header_scalar(pair$value))
+    })
+    keys <- vapply(values, `[[`, character(1), "key")
+    if (anyDuplicated(keys)) stop("CSV 설정 정보의 항목 이름이 중복되어 있습니다")
+    return(setNames(lapply(values, `[[`, "value"), keys))
+  }
+  parse_project_header_scalar(text)
+}
+
+parse_project_header <- function(lines) {
+  metadata <- list()
+  section <- NULL
+  for (line in lines) {
+    if (!nzchar(trimws(line))) next
+    content <- sub("^ +", "", line)
+    indentation <- nchar(line) - nchar(content)
+    if (indentation == 0L) {
+      pair <- split_project_header_pair(content)
+      if (pair$key %in% names(metadata)) {
+        stop("CSV 설정 정보의 최상위 항목이 중복되어 있습니다")
+      }
+      if (!nzchar(pair$value)) {
+        metadata[pair$key] <- list(list())
+        section <- pair$key
+      } else {
+        metadata[pair$key] <- list(parse_project_header_value(pair$value))
+        section <- NULL
+      }
+    } else if (indentation == 2L && !is.null(section)) {
+      pair <- split_project_header_pair(content)
+      section_data <- metadata[[section]]
+      if (pair$key %in% names(section_data)) {
+        stop("CSV 설정 정보의 하위 항목이 중복되어 있습니다")
+      }
+      section_data[pair$key] <- list(parse_project_header_value(pair$value))
+      metadata[section] <- list(section_data)
+    } else {
+      stop("CSV 설정 정보의 들여쓰기를 확인하세요")
+    }
+  }
+  metadata
+}
+
 read_csv_metadata <- function(path) {
   lines <- readLines(path, warn = FALSE)
-  yaml_delimiters <- which(trimws(lines) == "# ---")
-  if (length(yaml_delimiters) < 2L) return(list())
+  metadata_delimiters <- which(trimws(lines) == "# ---")
+  if (length(metadata_delimiters) < 2L) return(list())
 
-  yaml_start <- yaml_delimiters[1] + 1L
-  yaml_end <- yaml_delimiters[2] - 1L
-  if (yaml_start > yaml_end) return(list())
+  metadata_start <- metadata_delimiters[1] + 1L
+  metadata_end <- metadata_delimiters[2] - 1L
+  if (metadata_start > metadata_end) return(list())
 
-  yaml_lines <- sub("^# ?", "", lines[yaml_start:yaml_end])
-  yaml_text <- paste(yaml_lines, collapse = "\n")
-  if (!nzchar(trimws(yaml_text))) return(list())
-  yaml::yaml.load(yaml_text)
+  metadata_lines <- sub("^# ?", "", lines[metadata_start:metadata_end])
+  format_lines <- metadata_lines[grepl("^format[[:space:]]*:", metadata_lines)]
+  if (length(format_lines) != 1L) return(list())
+  format_value <- tryCatch({
+    pair <- split_project_header_pair(format_lines[[1]])
+    if (!identical(pair$key, "format")) return(list())
+    parse_project_header_scalar(pair$value)
+  }, error = function(error) NULL)
+  if (!identical(as.character(format_value), project_format)) return(list())
+  parse_project_header(metadata_lines)
 }
 
 project_pixels_to_unit <- function(pixel_x, pixel_y, calibration_box) {
@@ -820,11 +923,20 @@ series_from_metadata <- function(value) {
   series
 }
 
-yaml_quote <- function(value) {
-  encodeString(as.character(value), quote = '"', na.encode = FALSE)
+quote_project_header <- function(value) {
+  value <- as.character(value)
+  if (length(value) != 1L || is.na(value)) {
+    stop("CSV 설정 정보에 올바르지 않은 문자열이 있습니다")
+  }
+  value <- gsub("\\", "\\\\", value, fixed = TRUE)
+  value <- gsub('"', '\\"', value, fixed = TRUE)
+  value <- gsub("\n", "\\n", value, fixed = TRUE)
+  value <- gsub("\r", "\\r", value, fixed = TRUE)
+  value <- gsub("\t", "\\t", value, fixed = TRUE)
+  paste0('"', value, '"')
 }
 
-format_yaml_number <- function(value) {
+format_project_number <- function(value) {
   value <- as.numeric(value)
   if (length(value) != 1L || !is.finite(value)) {
     stop("CSV 설정 정보에 올바르지 않은 숫자가 있습니다")
@@ -835,7 +947,7 @@ format_yaml_number <- function(value) {
 serialize_project_metadata <- function(
     source_image, image_width, image_height, calibration, series) {
   if (anyDuplicated(series$name)) stop("그룹 명칭이 중복되어 저장할 수 없습니다")
-  number <- format_yaml_number
+  number <- format_project_number
   axis_point_line <- function(name) {
     point <- calibration$axis_points[[name]]
     coordinate <- if (startsWith(name, "x")) "pixel_x" else "pixel_y"
@@ -857,8 +969,8 @@ serialize_project_metadata <- function(
     vapply(seq_len(nrow(series)), function(index) {
       sprintf(
         "  %s: {symbol: %s, color: %s, size: %s, alpha: %s}",
-        yaml_quote(series$name[index]),
-        number(series$marker[index]), yaml_quote(series$color[index]),
+        quote_project_header(series$name[index]),
+        number(series$marker[index]), quote_project_header(series$color[index]),
         number(series$size[index]), number(series$alpha[index])
       )
     }, character(1))
@@ -867,21 +979,21 @@ serialize_project_metadata <- function(
   }
 
   c(
-    paste0("format: ", yaml_quote(project_format)),
+    paste0("format: ", quote_project_header(project_format)),
     "source_image:",
-    paste0("  filename: ", yaml_quote(basename(source_image))),
+    paste0("  filename: ", quote_project_header(basename(source_image))),
     sprintf(
       "  size: {width: %s, height: %s}",
       number(image_width), number(image_height)
     ),
     "box_points:", corner_lines,
     "x_axis:",
-    paste0("  name: ", yaml_quote(calibration$x$column)),
+    paste0("  name: ", quote_project_header(calibration$x$column)),
     paste0("  scale: ", calibration$x$scale),
     paste0("  position: ", calibration$x$position),
     axis_point_line("x1"), axis_point_line("x2"),
     "y_axis:",
-    paste0("  name: ", yaml_quote(calibration$y$column)),
+    paste0("  name: ", quote_project_header(calibration$y$column)),
     paste0("  scale: ", calibration$y$scale),
     paste0("  position: ", calibration$y$position),
     axis_point_line("y1"), axis_point_line("y2"),
@@ -895,7 +1007,7 @@ serialize_project_metadata <- function(
 
 serialize_project_csv <- function(
     source_image, image_width, image_height, data, calibration, series) {
-  yaml_lines <- serialize_project_metadata(
+  metadata_lines <- serialize_project_metadata(
     source_image, image_width, image_height, calibration, series
   )
   body <- data
@@ -912,7 +1024,7 @@ serialize_project_csv <- function(
   csv_lines <- capture.output(
     utils::write.csv(body, row.names = FALSE, na = "")
   )
-  c("# ---", paste0("# ", yaml_lines), "# ---", csv_lines)
+  c("# ---", paste0("# ", metadata_lines), "# ---", csv_lines)
 }
 
 atomic_replace <- function(path, write_temp) {
