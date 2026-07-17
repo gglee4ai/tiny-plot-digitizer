@@ -1374,6 +1374,13 @@ ui <- fluidPage(
         unsavedChangesPending = Boolean(message.pending);
       });
 
+      Shiny.addCustomMessageHandler('set-restore-actions-state', function(message) {
+        var initialButton = document.getElementById('reload');
+        var savedButton = document.getElementById('restore_saved');
+        if (initialButton) initialButton.disabled = !Boolean(message.initial);
+        if (savedButton) savedButton.disabled = !Boolean(message.saved);
+      });
+
       window.addEventListener('beforeunload', function(event) {
         if (!unsavedChangesPending) return;
         event.preventDefault();
@@ -2061,8 +2068,8 @@ ui <- fluidPage(
           class = "save-actions",
           actionButton("save", "파일 저장", class = "btn-primary"),
           actionButton("save_options", "다른이름 저장"),
-          actionButton("restore_saved", "저장본 복귀"),
-          actionButton("reload", "변경 초기화")
+          actionButton("restore_saved", "마지막 저장으로"),
+          actionButton("reload", "처음 상태로")
         ),
         div(class = "status-line", textOutput("status"))
       )
@@ -2318,6 +2325,26 @@ server <- function(input, output, session) {
     mode_changes_pending("point") || mode_changes_pending("calibration")
   }
 
+  initial_restore_pending <- function() {
+    if (is.null(rv$initial_file_snapshot) || is.null(rv$disk_file_snapshot)) {
+      return(FALSE)
+    }
+    unsaved_changes_pending() ||
+      !identical(rv$disk_file_snapshot, rv$initial_file_snapshot)
+  }
+
+  saved_restore_pending <- function() {
+    if (is.null(rv$latest_saved_snapshot) || is.null(rv$disk_file_snapshot)) {
+      return(FALSE)
+    }
+    has_intermediate_save <- is.null(rv$initial_file_snapshot) ||
+      !identical(rv$latest_saved_snapshot, rv$initial_file_snapshot)
+    has_intermediate_save && (
+      unsaved_changes_pending() ||
+        !identical(rv$disk_file_snapshot, rv$latest_saved_snapshot)
+    )
+  }
+
   dirty_state_file <- trimws(Sys.getenv("DIGITIZER_DIRTY_STATE_FILE", ""))
   dirty_session_key <- paste(
     Sys.getpid(), format(Sys.time(), "%Y%m%d%H%M%OS6"),
@@ -2348,6 +2375,12 @@ server <- function(input, output, session) {
       "set-unsaved-state", list(pending = pending)
     )
     update_app_dirty_state(pending)
+  })
+  observe({
+    session$sendCustomMessage("set-restore-actions-state", list(
+      initial = initial_restore_pending(),
+      saved = saved_restore_pending()
+    ))
   })
   session$onSessionEnded(function() update_app_dirty_state(remove = TRUE))
 
@@ -4708,16 +4741,16 @@ server <- function(input, output, session) {
     req(rv$dataset)
     if (is.null(rv$dataset$load_path) || is.null(rv$latest_saved_snapshot)) {
       showModal(modalDialog(
-        title = "저장본 복귀",
+        title = "마지막 저장으로",
         "아직 파일로 저장된 상태가 없습니다.",
         footer = modalButton("닫기"),
         easyClose = TRUE
       ))
       return()
     }
-    if (!unsaved_changes_pending()) return()
+    if (!saved_restore_pending()) return()
     showModal(modalDialog(
-      title = "저장본 복귀",
+      title = "마지막 저장으로",
       "마지막 저장본으로 복귀하시겠습니까? 저장되지 않은 변경은 모두 사라집니다.",
       footer = tagList(
         modalButton("취소"),
@@ -4739,22 +4772,23 @@ server <- function(input, output, session) {
     req(rv$dataset)
     if (is.null(rv$dataset$load_path) || is.null(rv$initial_file_snapshot)) {
       showModal(modalDialog(
-        title = "변경 초기화",
-        "신규 파일에는 처음 불러온 CSV가 없어 변경 초기화를 사용할 수 없습니다.",
+        title = "처음 상태로",
+        "신규 파일에는 처음 불러온 CSV 상태가 없습니다.",
         footer = modalButton("닫기"),
         easyClose = TRUE
       ))
       return()
     }
+    if (!initial_restore_pending()) return()
     showModal(modalDialog(
-      title = "변경 초기화",
+      title = "처음 상태로",
       paste0(
-        "처음 불러온 CSV로 초기화하시겠습니까? ",
+        "처음 불러온 CSV 상태로 돌아가시겠습니까? ",
         "현재 파일을 최초 상태로 덮어쓰며 이후 저장 내용과 저장되지 않은 변경이 모두 사라집니다."
       ),
       footer = tagList(
         modalButton("취소"),
-        actionButton("confirm_reload", "초기화", class = "btn-danger")
+        actionButton("confirm_reload", "처음 상태로", class = "btn-danger")
       ),
       easyClose = FALSE
     ))

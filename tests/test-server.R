@@ -594,16 +594,45 @@ shiny::testServer(app$server, {
   session$setInputs(dataset = project_paths[1])
   session$flushReact()
 
+  expect_true(!initial_restore_pending(), "불러온 직후 처음 상태 복귀 비활성")
+  expect_true(!saved_restore_pending(), "불러온 직후 마지막 저장 복귀 비활성")
+
   modal_count <- 0L
   session$sendModal <- function(...) modal_count <<- modal_count + 1L
+  session$setInputs(reload = 1)
+  session$flushReact()
+  expect_true(modal_count == 0L, "불러온 직후 처음 상태 모달 숨김")
   session$setInputs(restore_saved = 1)
   session$flushReact()
-  expect_true(modal_count == 0L, "저장 직후 저장본 복귀 모달 숨김")
+  expect_true(modal_count == 0L, "불러온 직후 마지막 저장 모달 숨김")
 
   rv$point_dirty <- TRUE
+  expect_true(initial_restore_pending(), "수정 후 처음 상태 복귀 활성")
+  expect_true(!saved_restore_pending(), "중간 저장 전 마지막 저장 복귀 비활성")
+  session$setInputs(reload = 2)
+  session$flushReact()
+  expect_true(modal_count == 1L, "수정 후 처음 상태 모달 표시")
   session$setInputs(restore_saved = 2)
   session$flushReact()
-  expect_true(modal_count == 1L, "변경 후 저장본 복귀 모달 표시")
+  expect_true(modal_count == 1L, "중간 저장 전 마지막 저장 모달 숨김")
+
+  intermediate_snapshot <- c(rv$initial_file_snapshot, as.raw(0L))
+  rv$latest_saved_snapshot <- intermediate_snapshot
+  rv$disk_file_snapshot <- intermediate_snapshot
+  rv$point_dirty <- FALSE
+  expect_true(initial_restore_pending(), "중간 저장 후 처음 상태 복귀 활성")
+  expect_true(!saved_restore_pending(), "중간 저장 직후 마지막 저장 복귀 비활성")
+
+  rv$point_dirty <- TRUE
+  expect_true(saved_restore_pending(), "중간 저장 후 재수정 시 마지막 저장 복귀 활성")
+  session$setInputs(restore_saved = 3)
+  session$flushReact()
+  expect_true(modal_count == 2L, "재수정 후 마지막 저장 모달 표시")
+
+  rv$disk_file_snapshot <- rv$initial_file_snapshot
+  rv$point_dirty <- FALSE
+  expect_true(!initial_restore_pending(), "처음 상태 복귀 후 처음 상태 버튼 비활성")
+  expect_true(saved_restore_pending(), "처음 상태 복귀 후 마지막 저장 버튼 활성")
 })
 
 dirty_state_path <- file.path(fixture_dir, "dirty-state")
