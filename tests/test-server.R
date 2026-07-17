@@ -24,6 +24,15 @@ on.exit({
 
 calibration <- app$new_project_calibration(10, 10)
 series <- app$default_groups()
+second_style <- app$group_style_defaults(2L)
+series <- rbind(
+  series,
+  data.frame(
+    id = 2L, name = "group02", marker = second_style$marker,
+    color = second_style$color, size = second_style$size,
+    alpha = second_style$alpha, stringsAsFactors = FALSE
+  )
+)
 data <- data.frame(
   point_id = 7L, series_id = 1L, pixel_x = 4, pixel_y = 6
 )
@@ -156,6 +165,31 @@ shiny::testServer(app$server, {
     identical(loaded, TRUE),
     identical(rv$dataset$key, project_paths[2])
   )
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
+  original_point_id <- selected_point_id()
+  expect_true(identical(rv$data$series_id[rv$selected], 1L), "변경 전 포인트 그룹")
+  session$setInputs(change_point_series = 1)
+  session$flushReact()
+  expect_true(
+    identical(rv$pending_point_series_change$point_id, original_point_id),
+    "그룹변경 대상 포인트"
+  )
+  session$setInputs(point_series_target = "2", confirm_point_series_change = 1)
+  session$flushReact()
+  changed_row <- match(original_point_id, rv$data$point_id)
+  expect_true(identical(rv$data$series_id[changed_row], 2L), "포인트 그룹변경")
+  expect_true(identical(selected_point_id(), original_point_id), "그룹변경 후 선택 유지")
+  expect_true(is.null(rv$pending_point_series_change), "그룹변경 모달 상태 정리")
+  expect_true(undo_target(), "포인트 그룹변경 Undo")
+  restored_row <- match(original_point_id, rv$data$point_id)
+  expect_true(identical(rv$data$series_id[restored_row], 1L), "포인트 그룹변경 Undo 상태")
 })
 
 unlink(draft_path)

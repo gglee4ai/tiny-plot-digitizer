@@ -1069,8 +1069,9 @@ ui <- fluidPage(
       .compact-control-row input, .compact-control-row select { height: 34px; padding: 4px 6px; }
       .point-section-title { display: block; margin: 3px 0 5px; font-weight: 600; }
       .point-select-input .shiny-input-container { width: 100% !important; margin-bottom: 6px; }
-      .point-action-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
-      .point-action-row #add_point { grid-column: span 2; }
+      .point-action-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+      .point-action-row #add_point, .point-action-row #change_point_series { grid-column: span 3; }
+      .point-action-row #previous_point, .point-action-row #next_point, .point-action-row #delete_point { grid-column: span 2; }
       .point-action-row .btn { width: 100%; height: 34px; padding: 5px 2px; border-radius: 4px; font-size: 12px; }
       #add_point.add-mode-active { color: #fff; background: #24483e; border-color: #19352f; }
       #add_point.add-mode-active:hover { background: #19352f; border-color: #10241f; }
@@ -1498,6 +1499,8 @@ ui <- fluidPage(
                 class = "point-action-row",
                 actionButton("add_point", "포인트 연속추가",
                              title = "선택한 그룹에 포인트 연속 추가 시작"),
+                actionButton("change_point_series", "포인트 그룹변경",
+                             title = "선택한 포인트의 그룹 변경"),
                 actionButton("previous_point", "이전 [", title = "이전 포인트 ([)"),
                 actionButton("next_point", "다음 ]", title = "다음 포인트 (])"),
                 actionButton("delete_point", "제거", title = "선택한 포인트 제거")
@@ -1746,7 +1749,7 @@ server <- function(input, output, session) {
     calibration = NULL,
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
-    pending_series_edit = NULL,
+    pending_series_edit = NULL, pending_point_series_change = NULL,
     point_dirty = FALSE, calibration_dirty = FALSE,
     add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_navigation = NULL,
@@ -3167,6 +3170,126 @@ server <- function(input, output, session) {
     }
     mark_mode_changed("point", paste0(removed_name, " 그룹이 제거되었습니다"))
     refresh_series_choices(selected_id)
+  }, ignoreInit = TRUE)
+
+  output$point_series_change_impact <- renderUI({
+    pending <- rv$pending_point_series_change
+    req(pending, input$point_series_target)
+    target_id <- suppressWarnings(as.integer(input$point_series_target))
+    target_row <- series_row(target_id)
+    req(!is.na(target_row), target_id != pending$source_series_id)
+    source_count <- sum(rv$data$series_id == pending$source_series_id)
+    target_count <- sum(rv$data$series_id == target_id)
+    tags$div(
+      class = "well well-sm",
+      tags$div(sprintf(
+        "%s: %d개 → %d개",
+        pending$source_name, source_count, source_count - 1L
+      )),
+      tags$div(sprintf(
+        "%s: %d개 → %d개",
+        rv$series$name[target_row], target_count, target_count + 1L
+      ))
+    )
+  })
+
+  observeEvent(input$change_point_series, {
+    if (rv$add_mode) {
+      rv$status <- "포인트 연속추가를 종료한 후 그룹을 변경하세요"
+      return()
+    }
+    if (is.null(rv$selected) || is.null(rv$data) || !nrow(rv$data)) {
+      rv$status <- "그룹을 변경할 포인트를 선택하세요"
+      return()
+    }
+    row <- selected_row()
+    source_series_id <- rv$data$series_id[row]
+    source_row <- series_row(source_series_id)
+    target_choices <- series_choices()
+    target_choices <- target_choices[unname(target_choices) != as.character(source_series_id)]
+    if (is.na(source_row) || !length(target_choices)) {
+      rv$pending_point_series_change <- NULL
+      showModal(modalDialog(
+        title = "포인트 그룹변경",
+        "변경할 다른 그룹이 없습니다. 그룹을 먼저 추가하세요.",
+        footer = modalButton("확인"),
+        easyClose = TRUE,
+        size = "s"
+      ))
+      return()
+    }
+    group_rows <- which(rv$data$series_id == source_series_id)
+    group_number <- match(row, group_rows)
+    rv$pending_point_series_change <- list(
+      point_id = rv$data$point_id[row],
+      point_number = sprintf("%d-%d", rv$data$point_id[row], group_number),
+      source_series_id = source_series_id,
+      source_name = rv$series$name[source_row]
+    )
+    showModal(modalDialog(
+      title = "포인트 그룹변경",
+      tags$p(tags$strong("선택 포인트: "), rv$pending_point_series_change$point_number),
+      tags$p(tags$strong("현재 그룹: "), rv$pending_point_series_change$source_name),
+      selectInput(
+        "point_series_target", "변경할 그룹",
+        choices = target_choices, selectize = FALSE, width = "100%"
+      ),
+      uiOutput("point_series_change_impact"),
+      tags$div(
+        class = "alert alert-warning",
+        "그룹을 변경하면 포인트 목록 순서와 그룹별 번호가 다시 계산됩니다."
+      ),
+      footer = tagList(
+        actionButton("cancel_point_series_change", "취소"),
+        actionButton(
+          "confirm_point_series_change", "그룹 변경", class = "btn-primary"
+        )
+      ),
+      easyClose = FALSE,
+      size = "s"
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$cancel_point_series_change, {
+    removeModal()
+    rv$pending_point_series_change <- NULL
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$confirm_point_series_change, {
+    pending <- rv$pending_point_series_change
+    if (is.null(pending)) {
+      removeModal()
+      return()
+    }
+    point_row <- match(as.integer(pending$point_id), rv$data$point_id)
+    target_id <- suppressWarnings(as.integer(input$point_series_target))
+    target_row <- series_row(target_id)
+    if (is.na(point_row) || is.na(target_row) ||
+        identical(target_id, rv$data$series_id[point_row])) {
+      showNotification("변경할 포인트와 그룹을 확인하세요", type = "warning")
+      return()
+    }
+    source_row <- series_row(rv$data$series_id[point_row])
+    if (is.na(source_row)) {
+      showNotification("현재 포인트의 그룹을 확인할 수 없습니다", type = "warning")
+      return()
+    }
+    source_name <- rv$series$name[source_row]
+    target_name <- rv$series$name[target_row]
+    remember_point_change()
+    rv$data$series_id[point_row] <- target_id
+    sort_points(pending$point_id)
+    mark_mode_changed(
+      "point",
+      sprintf(
+        "포인트 %s의 그룹을 %s → %s로 변경했습니다",
+        pending$point_number, source_name, target_name
+      )
+    )
+    refresh_controls(rv$selected)
+    refresh_series_choices(as.character(target_id))
+    removeModal()
+    rv$pending_point_series_change <- NULL
   }, ignoreInit = TRUE)
 
   change_axis_name <- function(axis, new_name) {
