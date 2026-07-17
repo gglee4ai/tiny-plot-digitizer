@@ -42,6 +42,13 @@ install.packages(c("shiny", "png"))
 Rscript run.R
 ```
 
+소스 수정 후 `app.R`과 `run.R`을 앱 번들에 동기화하고 ad-hoc 서명을
+갱신하려면 다음 명령을 실행합니다.
+
+```sh
+./build-macos-app.sh
+```
+
 ### Windows
 
 `run.bat`을 더블클릭합니다. R이 기본 설치 폴더에 있거나 `Rscript.exe`가 PATH에 등록되어 있어야 합니다.
@@ -72,6 +79,7 @@ tiny-plot-digitizer/
 ├── run.R
 ├── Tiny Plot Digitizer.app
 ├── Tiny Plot Digitizer.command
+├── build-macos-app.sh
 ├── run.bat
 ├── assets/
 └── README.md

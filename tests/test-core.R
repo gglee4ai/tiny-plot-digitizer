@@ -59,6 +59,33 @@ expect_equal(
   special_header_value, "CSV 헤더 특수 문자열 왕복"
 )
 
+legacy_project_path <- file.path(
+  project_dir, "tests", "fixtures", "legacy-project.csv"
+)
+legacy_header <- app$read_project_header_lines(legacy_project_path)
+if (any(startsWith(legacy_header, '"group"'))) {
+  stop("CSV 헤더 전용 읽기가 본문까지 읽었습니다", call. = FALSE)
+}
+legacy_metadata <- app$read_csv_metadata(legacy_project_path)
+expect_equal(
+  legacy_metadata$source_image$filename, "legacy-source.png",
+  "구버전 CSV 원본 이미지 헤더"
+)
+legacy_series <- app$series_from_metadata(legacy_metadata$display_styles)
+expect_equal(
+  legacy_series$name, 'legacy: "series"', "구버전 CSV 그룹 헤더"
+)
+legacy_data <- utils::read.csv(
+  legacy_project_path, comment.char = "#", check.names = FALSE
+)
+legacy_calibration <- app$parse_projective_calibration(
+  legacy_metadata, names(legacy_data)
+)
+if (is.null(legacy_calibration) ||
+    !app$valid_projective_calibration(legacy_calibration)) {
+  stop("구버전 CSV 좌표 설정 헤더를 읽지 못했습니다", call. = FALSE)
+}
+
 other_metadata_path <- file.path(folder_fixture, "other-metadata.csv")
 writeLines(c(
   "# ---", '# title: "다른 형식"', "# nested:", "#   value: 1",

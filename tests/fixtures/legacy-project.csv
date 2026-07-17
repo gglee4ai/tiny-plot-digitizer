@@ -1,0 +1,27 @@
+# ---
+# format: "Tiny Plot Digitizer 2026.07"
+# source_image:
+#   filename: "legacy-source.png"
+#   size: {width: 100, height: 100}
+# box_points:
+#   origin: {pixel_x: 0, pixel_y: 100}
+#   x_axis_end: {pixel_x: 100, pixel_y: 100}
+#   y_axis_end: {pixel_x: 0, pixel_y: 0}
+#   xy_axis_end: {pixel_x: 100, pixel_y: 0}
+# x_axis:
+#   name: "x"
+#   scale: linear
+#   position: bottom
+#   x1: {pixel: 0, value: 0}
+#   x2: {pixel: 100, value: 10}
+# y_axis:
+#   name: "y"
+#   scale: linear
+#   position: left
+#   y1: {pixel: 100, value: 0}
+#   y2: {pixel: 0, value: 20}
+# display_styles:
+#   "legacy: \"series\"": {symbol: 3, color: "#1f77b4", size: 1, alpha: 0.8}
+# ---
+"group","pixel_x","pixel_y","x","y"
+"legacy: ""series""",50,50,5,10

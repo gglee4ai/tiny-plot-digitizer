@@ -113,16 +113,28 @@ parse_project_header <- function(lines) {
   metadata
 }
 
+read_project_header_lines <- function(path) {
+  connection <- file(path, open = "r", encoding = "UTF-8")
+  on.exit(close(connection), add = TRUE)
+  first_line <- readLines(connection, n = 1L, warn = FALSE)
+  if (!length(first_line) || trimws(first_line) != "# ---") {
+    return(character())
+  }
+  header_lines <- character()
+  repeat {
+    line <- readLines(connection, n = 1L, warn = FALSE)
+    if (!length(line)) return(character())
+    if (trimws(line) == "# ---") {
+      return(sub("^# ?", "", header_lines))
+    }
+    if (nzchar(line) && !startsWith(line, "#")) return(character())
+    header_lines <- c(header_lines, line)
+  }
+}
+
 read_csv_metadata <- function(path) {
-  lines <- readLines(path, warn = FALSE)
-  metadata_delimiters <- which(trimws(lines) == "# ---")
-  if (length(metadata_delimiters) < 2L) return(list())
-
-  metadata_start <- metadata_delimiters[1] + 1L
-  metadata_end <- metadata_delimiters[2] - 1L
-  if (metadata_start > metadata_end) return(list())
-
-  metadata_lines <- sub("^# ?", "", lines[metadata_start:metadata_end])
+  metadata_lines <- read_project_header_lines(path)
+  if (!length(metadata_lines)) return(list())
   format_lines <- metadata_lines[grepl("^format[[:space:]]*:", metadata_lines)]
   if (length(format_lines) != 1L) return(list())
   format_value <- tryCatch({
