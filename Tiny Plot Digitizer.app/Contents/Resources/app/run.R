@@ -8,7 +8,7 @@ app_dir <- dirname(normalizePath(
   script_path, mustWork = TRUE
 ))
 
-required_packages <- c("shiny", "shinyFiles", "png", "yaml")
+required_packages <- c("shiny", "png", "yaml")
 missing_packages <- required_packages[!vapply(
   required_packages, requireNamespace, logical(1), quietly = TRUE
 )]

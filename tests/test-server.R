@@ -56,6 +56,49 @@ Sys.setenv(
   DIGITIZER_DRAFT_FILE = draft_path
 )
 
+picker_child <- file.path(fixture_dir, "폴더 선택 테스트")
+picker_nested <- file.path(picker_child, "하위")
+dir.create(picker_nested, recursive = TRUE)
+
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(folder = 1)
+  session$flushReact()
+  expect_true(
+    identical(folder_picker_path(), normalizePath(fixture_dir)),
+    "폴더 선택 모달 시작 경로"
+  )
+  entries <- folder_picker_entries()
+  child_index <- match("폴더 선택 테스트", entries$name)
+  expect_true(!is.na(child_index), "폴더 선택 하위 목록")
+
+  session$setInputs(
+    folder_picker_open = list(index = child_index, nonce = 1)
+  )
+  session$flushReact()
+  expect_true(
+    identical(folder_picker_path(), normalizePath(picker_child)),
+    "폴더 선택 하위 이동"
+  )
+  session$setInputs(folder_picker_up = 1)
+  session$flushReact()
+  expect_true(
+    identical(folder_picker_path(), normalizePath(fixture_dir)),
+    "폴더 선택 상위 이동"
+  )
+
+  session$setInputs(
+    folder_picker_open = list(index = child_index, nonce = 2)
+  )
+  session$flushReact()
+  session$setInputs(confirm_folder_picker = 1)
+  session$flushReact()
+  expect_true(
+    identical(selected_folder(), normalizePath(picker_child)),
+    "현재 작업 폴더 선택"
+  )
+})
+
 shiny::testServer(app$server, {
   session$flushReact()
   session$setInputs(dataset = project_paths[1])

@@ -1,4 +1,4 @@
-required_packages <- c("shiny", "shinyFiles", "png", "yaml")
+required_packages <- c("shiny", "png", "yaml")
 missing_packages <- required_packages[!vapply(
   required_packages, requireNamespace, logical(1), quietly = TRUE
 )]
@@ -1053,9 +1053,20 @@ ui <- fluidPage(
       .project-source-control-row .btn { width: 100%; height: 34px; padding: 5px 4px; }
       .project-source-control-row .form-group { width: 100%; margin: 0; }
       .project-source-control-row select { width: 100%; height: 34px; padding: 4px 6px; }
-      #folder-modal .sF-breadcrumps { display: none; }
-      #folder-modal .folder-picker-breadcrumb { display: flex; align-items: center; gap: 5px; margin: 7px 0 2px; padding: 5px 8px; min-height: 30px; overflow-x: auto; white-space: nowrap; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 12px; }
-      #folder-modal .folder-picker-separator { color: #777; }
+      .folder-picker-toolbar { display: grid; grid-template-columns: 70px 70px minmax(0, 1fr); gap: 6px; align-items: center; margin-bottom: 8px; }
+      .folder-picker-toolbar .btn { width: 100%; }
+      .folder-picker-current { min-width: 0; height: 34px; padding: 6px 8px; overflow: hidden; border: 1px solid #ccc; border-radius: 4px; background: #f7f7f7; font-size: 12px; }
+      .folder-picker-current .shiny-text-output { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .folder-picker-list { height: 412px; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+      .folder-picker-entry { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 7px 10px; overflow: hidden; border: 0; border-bottom: 1px solid #eee; border-radius: 0; background: #fff; text-align: left; }
+      .folder-picker-entry:last-child { border-bottom: 0; }
+      .folder-picker-entry:hover, .folder-picker-entry:focus { background: #eef5f2; outline: none; }
+      .folder-picker-folder-icon { color: #f2c94c; font-size: 17px; }
+      .folder-picker-entry-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .folder-picker-file { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px; overflow: hidden; border-bottom: 1px solid #eee; background: #fafafa; color: #666; }
+      .folder-picker-file-icon { color: #66809a; font-size: 15px; }
+      .folder-picker-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .folder-picker-empty { padding: 12px; color: #777; text-align: center; }
       .move-button-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 6px 0 9px; }
       .calibration-move-button-row { grid-template-columns: repeat(6, minmax(0, 1fr)); }
       .move-button-row .btn { width: 100%; height: 34px; padding: 3px; font-size: 18px; border-radius: 4px; }
@@ -1368,92 +1379,14 @@ ui <- fluidPage(
         Shiny.setInputValue(radio.name, radio.value, {priority: 'event'});
       });
 
-      var folderPickerTarget = null;
-
-      function renderFolderPickerPath() {
-        var modal = document.getElementById('folder-modal');
-        if (!modal || !folderPickerTarget) return;
-        var modalBody = modal.querySelector('.modal-body');
-        var modalControl = modal.querySelector('.sF-navigation');
-        if (!modalBody || !modalControl) return;
-        var breadcrumb = modal.querySelector('.folder-picker-breadcrumb');
-        if (!breadcrumb) {
-          breadcrumb = document.createElement('div');
-          breadcrumb.className = 'folder-picker-breadcrumb';
-          modalControl.insertAdjacentElement('afterend', breadcrumb);
-        }
-        var pathKey = JSON.stringify(folderPickerTarget);
-        if (breadcrumb.dataset.pathKey === pathKey) return;
-        breadcrumb.dataset.pathKey = pathKey;
-        breadcrumb.replaceChildren();
-        ['홈'].concat(folderPickerTarget.components || []).forEach(function(name, index, path) {
-          var folder = document.createElement('span');
-          folder.className = 'folder-picker-component';
-          folder.textContent = name;
-          breadcrumb.appendChild(folder);
-          if (index < path.length - 1) {
-            var separator = document.createElement('span');
-            separator.className = 'folder-picker-separator';
-            separator.textContent = '›';
-            breadcrumb.appendChild(separator);
-          }
-        });
-        breadcrumb.scrollLeft = breadcrumb.scrollWidth;
-      }
-
-      function initializeFolderPickerPath() {
-        var modal = document.getElementById('folder-modal');
-        if (!modal || !folderPickerTarget) return;
-        renderFolderPickerPath();
-        var root = modal.querySelector('.sF-dirList > .sF-directory');
-        if (!root) return;
-        var targetKey = JSON.stringify(folderPickerTarget);
-        if (modal.dataset.folderPickerTarget === targetKey) return;
-
-        var tree = {name: '', expanded: true, empty: false, children: []};
-        var branch = tree;
-        (folderPickerTarget.components || []).forEach(function(name) {
-          var child = {name: name, expanded: true, empty: false, children: []};
-          branch.children = [child];
-          branch = child;
-        });
-        modal.dataset.folderPickerTarget = targetKey;
-        Shiny.setInputValue('folder-modal', {
-          tree: tree,
-          selectedRoot: folderPickerTarget.root,
-          contentPath: [''].concat(folderPickerTarget.components || []),
+      document.addEventListener('click', function(event) {
+        var entry = event.target.closest('.folder-picker-entry');
+        if (!entry) return;
+        Shiny.setInputValue('folder_picker_open', {
+          index: Number(entry.dataset.folderIndex),
           nonce: Date.now()
         }, {priority: 'event'});
-      }
-
-      function revealFolderPickerTarget() {
-        var modal = document.getElementById('folder-modal');
-        if (!modal || !folderPickerTarget) return;
-        var selected = modal.querySelector('.sF-dirList .sF-directory.selected');
-        if (!selected) return;
-        var targetKey = JSON.stringify(folderPickerTarget);
-        if (modal.dataset.folderPickerVisible === targetKey) return;
-        modal.dataset.folderPickerVisible = targetKey;
-        selected.scrollIntoView({block: 'center'});
-      }
-
-      Shiny.addCustomMessageHandler('set-folder-picker-path', function(message) {
-        folderPickerTarget = message;
-        var modal = document.getElementById('folder-modal');
-        if (modal) {
-          delete modal.dataset.folderPickerTarget;
-          delete modal.dataset.folderPickerVisible;
-        }
-        renderFolderPickerPath();
-        window.setTimeout(initializeFolderPickerPath, 0);
       });
-
-      var folderModalObserver = new MutationObserver(function() {
-        renderFolderPickerPath();
-        initializeFolderPickerPath();
-        revealFolderPickerTarget();
-      });
-      folderModalObserver.observe(document.documentElement, {childList: true, subtree: true});
     "))
   ),
   fluidRow(
@@ -1477,9 +1410,7 @@ ui <- fluidPage(
               class = "selected-folder-box",
               div(class = "selected-folder-line", textOutput("folder_path", inline = TRUE))
             ),
-            shinyFiles::shinyDirButton(
-              "folder", "선택", "작업 폴더를 선택하세요"
-            )
+            actionButton("folder", "선택", title = "작업 폴더를 선택하세요")
           )
         ),
         div(
@@ -1737,6 +1668,85 @@ ui <- fluidPage(
   )
 )
 
+folder_path_key <- function(path) {
+  if (identical(.Platform$OS.type, "windows")) tolower(path) else path
+}
+
+normalize_folder_in_root <- function(path, root) {
+  root <- normalizePath(
+    path.expand(root), winslash = .Platform$file.sep, mustWork = TRUE
+  )
+  path <- normalizePath(
+    path.expand(path), winslash = .Platform$file.sep, mustWork = TRUE
+  )
+  if (!dir.exists(path)) stop("폴더를 찾을 수 없습니다: ", path)
+  root_key <- folder_path_key(root)
+  path_key <- folder_path_key(path)
+  root_prefix <- paste0(root_key, .Platform$file.sep)
+  if (!identical(path_key, root_key) && !startsWith(path_key, root_prefix)) {
+    stop("홈 폴더 밖의 경로는 선택할 수 없습니다: ", path)
+  }
+  path
+}
+
+list_child_folders <- function(path, root) {
+  path <- normalize_folder_in_root(path, root)
+  entries <- list.files(
+    path, all.files = FALSE, full.names = TRUE, no.. = TRUE
+  )
+  if (!length(entries)) {
+    return(data.frame(name = character(), path = character()))
+  }
+  info <- file.info(entries)
+  entries <- entries[!is.na(info$isdir) & info$isdir]
+  rows <- lapply(entries, function(entry) {
+    normalized <- tryCatch(
+      normalize_folder_in_root(entry, root), error = function(error) NULL
+    )
+    if (is.null(normalized) || file.access(normalized, 4L) != 0L) return(NULL)
+    data.frame(
+      name = basename(entry), path = normalized, stringsAsFactors = FALSE
+    )
+  })
+  rows <- Filter(Negate(is.null), rows)
+  if (!length(rows)) {
+    return(data.frame(name = character(), path = character()))
+  }
+  folders <- do.call(rbind, rows)
+  folders <- folders[order(tolower(folders$name), folders$name), , drop = FALSE]
+  rownames(folders) <- NULL
+  folders
+}
+
+list_folder_files <- function(path, root) {
+  path <- normalize_folder_in_root(path, root)
+  entries <- list.files(
+    path, pattern = "[.](png|csv)$", ignore.case = TRUE,
+    all.files = FALSE, full.names = TRUE, no.. = TRUE
+  )
+  if (!length(entries)) {
+    return(data.frame(name = character(), path = character()))
+  }
+  info <- file.info(entries)
+  entries <- entries[!is.na(info$isdir) & !info$isdir & file.access(entries, 4L) == 0L]
+  if (!length(entries)) {
+    return(data.frame(name = character(), path = character()))
+  }
+  files <- data.frame(
+    name = basename(entries), path = entries, stringsAsFactors = FALSE
+  )
+  files <- files[order(tolower(files$name), files$name), , drop = FALSE]
+  rownames(files) <- NULL
+  files
+}
+
+parent_folder_in_root <- function(path, root) {
+  path <- normalize_folder_in_root(path, root)
+  root <- normalize_folder_in_root(root, root)
+  if (identical(folder_path_key(path), folder_path_key(root))) return(root)
+  normalize_folder_in_root(dirname(path), root)
+}
+
 default_working_folder <- function(
   home_dir,
   development_folder = file.path(
@@ -1752,6 +1762,7 @@ default_working_folder <- function(
 
 server <- function(input, output, session) {
   home_dir <- normalizePath("~", mustWork = TRUE)
+  home_prefix <- paste0(home_dir, .Platform$file.sep)
   configured_draft <- trimws(Sys.getenv("DIGITIZER_DRAFT_FILE", ""))
   runtime_app_dir <- normalizePath(
     getOption("digitization.point.editor.app_dir", getwd()),
@@ -1777,13 +1788,15 @@ server <- function(input, output, session) {
   } else {
     default_working_folder(home_dir)
   }
-  home_prefix <- paste0(home_dir, .Platform$file.sep)
-  if (!identical(initial_folder, home_dir) && !startsWith(initial_folder, home_prefix)) {
-    warning("DIGITIZER_FOLDER는 홈 폴더 안의 경로만 지정할 수 있습니다. 홈 폴더에서 시작합니다.")
-    initial_folder <- home_dir
-  }
+  initial_folder <- tryCatch(
+    normalize_folder_in_root(initial_folder, home_dir),
+    error = function(error) {
+      warning("DIGITIZER_FOLDER는 홈 폴더 안의 경로만 지정할 수 있습니다. 홈 폴더에서 시작합니다.")
+      home_dir
+    }
+  )
   selected_folder <- reactiveVal(initial_folder)
-  folder_roots <- c("홈" = home_dir)
+  folder_picker_path <- reactiveVal(initial_folder)
   catalog <- reactiveVal(list())
   image_cache <- new.env(parent = emptyenv())
   image_cache$key <- NULL
@@ -2118,29 +2131,19 @@ server <- function(input, output, session) {
     update_project_input(projects, selected = selected)
   }
 
-  folder_picker_target <- function(path) {
-    path <- normalizePath(path, mustWork = TRUE)
-    home_prefix <- paste0(home_dir, .Platform$file.sep)
-    if (identical(path, home_dir)) {
-      relative_path <- ""
-    } else if (startsWith(path, home_prefix)) {
-      relative_path <- substring(path, nchar(home_prefix) + 1L)
-    } else {
-      stop("홈 폴더 밖의 경로는 선택할 수 없습니다: ", path)
-    }
-    components <- if (nzchar(relative_path)) {
-      strsplit(relative_path, .Platform$file.sep, fixed = TRUE)[[1]]
-    } else {
-      character()
-    }
-    list(root = "홈", components = unname(components))
+  set_folder_picker_path <- function(path) {
+    path <- normalize_folder_in_root(path, home_dir)
+    folder_picker_path(path)
+    invisible(path)
   }
 
-  update_folder_picker_target <- function(path) {
-    session$sendCustomMessage(
-      "set-folder-picker-path", folder_picker_target(path)
-    )
-  }
+  folder_picker_entries <- reactive({
+    list_child_folders(folder_picker_path(), home_dir)
+  })
+
+  folder_picker_files <- reactive({
+    list_folder_files(folder_picker_path(), home_dir)
+  })
 
   restore_project_selection <- function(projects) {
     selected <- if (
@@ -2168,13 +2171,17 @@ server <- function(input, output, session) {
     kind <- navigation$kind
     target <- navigation$target
     if (identical(kind, "folder")) {
-      if (!dir.exists(target)) {
+      target <- tryCatch(
+        normalize_folder_in_root(target, home_dir),
+        error = function(error) NULL
+      )
+      if (is.null(target)) {
         rv$status <- "선택한 작업 폴더를 찾을 수 없습니다"
-        update_folder_picker_target(selected_folder())
+        set_folder_picker_path(selected_folder())
         return(invisible(FALSE))
       }
       selected_folder(target)
-      update_folder_picker_target(target)
+      set_folder_picker_path(target)
       update_catalog(target)
       return(invisible(TRUE))
     }
@@ -2247,7 +2254,7 @@ server <- function(input, output, session) {
       update_project_input(catalog(), selected = rv$dataset$key, freeze = TRUE)
     }
     if (identical(kind, "folder")) {
-      update_folder_picker_target(selected_folder())
+      set_folder_picker_path(selected_folder())
     }
     showModal(modalDialog(
       title = "저장되지 않은 변경사항",
@@ -2262,19 +2269,77 @@ server <- function(input, output, session) {
     invisible()
   }
 
-  shinyFiles::shinyDirChoose(
-    input, "folder", session = session, roots = folder_roots,
-    defaultRoot = "홈", defaultPath = "",
-    allowDirCreate = FALSE
-  )
-
   output$folder_path <- renderText({
     basename(selected_folder())
   })
 
+  output$folder_picker_current <- renderText({
+    display_path(folder_picker_path())
+  })
+
+  output$folder_picker_entries <- renderUI({
+    folders <- folder_picker_entries()
+    files <- folder_picker_files()
+    folder_items <- if (!nrow(folders)) {
+      div(class = "folder-picker-empty", "하위 폴더가 없습니다")
+    } else lapply(seq_len(nrow(folders)), function(index) {
+      tags$button(
+        type = "button",
+        class = "folder-picker-entry",
+        `data-folder-index` = index,
+        tags$span(
+          class = paste(
+            "glyphicon glyphicon-folder-close", "folder-picker-folder-icon"
+          ),
+          `aria-hidden` = "true"
+        ),
+        tags$span(class = "folder-picker-entry-name", folders$name[[index]]),
+        title = folders$name[[index]]
+      )
+    })
+    file_items <- if (!nrow(files)) {
+      div(class = "folder-picker-empty", "PNG/CSV 파일이 없습니다")
+    } else lapply(seq_len(nrow(files)), function(index) {
+      div(
+        class = "folder-picker-file",
+        tags$span(
+          class = paste("glyphicon glyphicon-file", "folder-picker-file-icon"),
+          `aria-hidden` = "true"
+        ),
+        tags$span(class = "folder-picker-file-name", files$name[[index]]),
+        title = files$name[[index]]
+      )
+    })
+    tagList(folder_items, file_items)
+  })
+
+  show_folder_picker <- function() {
+    set_folder_picker_path(selected_folder())
+    showModal(modalDialog(
+      title = "작업 폴더 선택",
+      div(
+        class = "folder-picker-toolbar",
+        actionButton("folder_picker_home", "홈"),
+        actionButton("folder_picker_up", "상위"),
+        div(
+          class = "folder-picker-current",
+          textOutput("folder_picker_current", inline = TRUE)
+        )
+      ),
+      div(class = "folder-picker-list", uiOutput("folder_picker_entries")),
+      footer = tagList(
+        modalButton("취소"),
+        actionButton(
+          "confirm_folder_picker", "현재 폴더 선택", class = "btn-primary"
+        )
+      ),
+      easyClose = FALSE
+    ))
+  }
+
   observeEvent(TRUE, {
     update_catalog(initial_folder)
-    update_folder_picker_target(initial_folder)
+    set_folder_picker_path(initial_folder)
     if (!is.null(recovery_draft_error)) {
       remove_recovery_draft()
       showNotification(
@@ -2287,14 +2352,52 @@ server <- function(input, output, session) {
   }, once = TRUE)
 
   observeEvent(input$folder, {
-    folder_path <- shinyFiles::parseDirPath(folder_roots, input$folder)
-    if (!length(folder_path) || !dir.exists(folder_path)) return()
-    folder_path <- normalizePath(folder_path, mustWork = TRUE)
-    if (identical(folder_path, selected_folder())) {
-      update_folder_picker_target(folder_path)
+    show_folder_picker()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$folder_picker_home, {
+    set_folder_picker_path(home_dir)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$folder_picker_up, {
+    tryCatch(
+      set_folder_picker_path(
+        parent_folder_in_root(folder_picker_path(), home_dir)
+      ),
+      error = function(error) {
+        showNotification(conditionMessage(error), type = "warning")
+      }
+    )
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$folder_picker_open, {
+    index <- suppressWarnings(as.integer(input$folder_picker_open$index))
+    entries <- folder_picker_entries()
+    if (length(index) != 1L || is.na(index) || index < 1L ||
+        index > nrow(entries)) {
+      showNotification("선택한 폴더를 열 수 없습니다", type = "warning")
       return()
     }
-    request_navigation("folder", folder_path, basename(folder_path))
+    tryCatch(
+      set_folder_picker_path(entries$path[[index]]),
+      error = function(error) {
+        showNotification("선택한 폴더를 열 수 없습니다", type = "warning")
+      }
+    )
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$confirm_folder_picker, {
+    target <- tryCatch(
+      normalize_folder_in_root(folder_picker_path(), home_dir),
+      error = function(error) {
+        showNotification(conditionMessage(error), type = "warning")
+        NULL
+      }
+    )
+    if (is.null(target)) return()
+    removeModal()
+    if (identical(target, selected_folder())) return()
+    request_navigation("folder", target, basename(target))
   }, ignoreInit = TRUE)
 
   observeEvent(input$new_project, {
@@ -2640,7 +2743,7 @@ server <- function(input, output, session) {
     }
 
     folder_path <- dirname(source_path)
-    folder_picker_target(folder_path)
+    normalize_folder_in_root(folder_path, home_dir)
     dataset <- draft$dataset
     dataset$source_path <- source_path
     if (!is.null(dataset$load_path)) {
@@ -2656,7 +2759,7 @@ server <- function(input, output, session) {
     projects[[dataset$key]] <- dataset
     selected_folder(folder_path)
     catalog(projects)
-    update_folder_picker_target(folder_path)
+    set_folder_picker_path(folder_path)
     update_project_input(projects, selected = dataset$key, freeze = TRUE)
 
     rv$data <- draft$data

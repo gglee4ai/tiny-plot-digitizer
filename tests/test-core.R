@@ -24,6 +24,11 @@ expect_equal <- function(actual, expected, label, tolerance = 1e-8) {
   }
 }
 
+expect_error <- function(expression, label) {
+  result <- try(force(expression), silent = TRUE)
+  if (!inherits(result, "try-error")) stop(label, call. = FALSE)
+}
+
 calibration <- app$new_project_calibration(100, 100)
 history <- list()
 for (value in seq_len(55)) {
@@ -45,6 +50,49 @@ expect_equal(
   app$default_working_folder(folder_fixture, development_folder),
   normalizePath(development_folder), "개발 폴더 기본값"
 )
+
+picker_root <- file.path(folder_fixture, "picker-root")
+visible_folder <- file.path(picker_root, "Visible")
+hidden_folder <- file.path(picker_root, ".hidden")
+outside_folder <- file.path(folder_fixture, "outside")
+dir.create(visible_folder, recursive = TRUE)
+dir.create(hidden_folder)
+dir.create(outside_folder)
+writeLines("not a folder", file.path(picker_root, "file.txt"))
+picker_entries <- app$list_child_folders(picker_root, picker_root)
+expect_equal(picker_entries$name, "Visible", "폴더 선택 목록 필터링")
+
+writeLines("csv", file.path(picker_root, "data.csv"))
+writeLines("png", file.path(picker_root, "plot.PNG"))
+writeLines("hidden", file.path(picker_root, ".hidden.csv"))
+dir.create(file.path(picker_root, "folder.csv"))
+picker_files <- app$list_folder_files(picker_root, picker_root)
+expect_equal(
+  picker_files$name, c("data.csv", "plot.PNG"),
+  "폴더 선택 PNG/CSV 파일 목록"
+)
+
+nested_folder <- file.path(visible_folder, "nested")
+dir.create(nested_folder)
+expect_equal(
+  app$parent_folder_in_root(nested_folder, picker_root),
+  normalizePath(visible_folder), "폴더 선택 상위 이동"
+)
+expect_equal(
+  app$parent_folder_in_root(picker_root, picker_root),
+  normalizePath(picker_root), "폴더 선택 루트 경계"
+)
+expect_error(
+  app$normalize_folder_in_root(outside_folder, picker_root),
+  "폴더 선택 홈 밖 경로 차단"
+)
+outside_link <- file.path(picker_root, "outside-link")
+if (isTRUE(file.symlink(outside_folder, outside_link))) {
+  picker_entries <- app$list_child_folders(picker_root, picker_root)
+  if ("outside-link" %in% picker_entries$name) {
+    stop("폴더 선택 홈 밖 심볼릭 링크 차단 실패", call. = FALSE)
+  }
+}
 
 draft_path <- file.path(folder_fixture, "recovery-draft.rds")
 draft <- list(
