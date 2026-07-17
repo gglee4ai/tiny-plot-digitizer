@@ -2603,15 +2603,13 @@ server <- function(input, output, session) {
     saved_snapshot <- read_file_bytes(saved_path)
     rv$latest_saved_snapshot <- saved_snapshot
     rv$disk_file_snapshot <- saved_snapshot
-    previous_key <- rv$dataset$key
     rv$dataset$key <- saved_path
     rv$dataset$load_path <- saved_path
     rv$dataset$label <- basename(saved_path)
-    current_catalog <- catalog()
-    if (!is.null(previous_key) && previous_key %in% names(current_catalog)) {
-      current_catalog[[previous_key]] <- NULL
+    current_catalog <- discover_projects(dirname(saved_path))
+    if (!saved_path %in% names(current_catalog)) {
+      current_catalog[[saved_path]] <- rv$dataset
     }
-    current_catalog[[saved_path]] <- rv$dataset
     catalog(current_catalog)
     update_project_input(current_catalog, selected = saved_path, freeze = TRUE)
     capture_all_baselines()

@@ -646,6 +646,29 @@ shiny::testServer(app$server, {
   expect_true(saved_restore_pending(), "처음 상태 복귀 후 마지막 저장 버튼 활성")
 })
 
+sorted_copy_path <- file.path(fixture_dir, "00-sorted-copy.csv")
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[2])
+  session$flushReact()
+
+  rv$data$pixel_x[1] <- rv$data$pixel_x[1] + 1
+  rv$point_dirty <- TRUE
+  saved <- save_changes(target_path = sorted_copy_path, force = TRUE)
+  expect_true(!is.null(saved), "다른이름 저장 성공")
+
+  project_labels <- vapply(catalog(), `[[`, character(1), "label")
+  expect_true(
+    identical(project_labels, sort(project_labels)),
+    "저장 후 작업 파일 이름순 유지"
+  )
+  expect_true(
+    all(normalizePath(c(project_paths[2], sorted_copy_path)) %in% names(catalog())),
+    "다른이름 저장 후 기존 파일과 새 파일 유지"
+  )
+})
+unlink(sorted_copy_path)
+
 dirty_state_path <- file.path(fixture_dir, "dirty-state")
 Sys.setenv(DIGITIZER_DIRTY_STATE_FILE = dirty_state_path)
 shiny::testServer(app$server, {
