@@ -4715,6 +4715,7 @@ server <- function(input, output, session) {
       ))
       return()
     }
+    if (!unsaved_changes_pending()) return()
     showModal(modalDialog(
       title = "저장본 복귀",
       "마지막 저장본으로 복귀하시겠습니까? 저장되지 않은 변경은 모두 사라집니다.",

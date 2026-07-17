@@ -588,6 +588,24 @@ shiny::testServer(app$server, {
   expect_true(!file.exists(draft_path), "정상 상태의 복구 draft 제거")
 })
 
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
+  modal_count <- 0L
+  session$sendModal <- function(...) modal_count <<- modal_count + 1L
+  session$setInputs(restore_saved = 1)
+  session$flushReact()
+  expect_true(modal_count == 0L, "저장 직후 저장본 복귀 모달 숨김")
+
+  rv$point_dirty <- TRUE
+  session$setInputs(restore_saved = 2)
+  session$flushReact()
+  expect_true(modal_count == 1L, "변경 후 저장본 복귀 모달 표시")
+})
+
 dirty_state_path <- file.path(fixture_dir, "dirty-state")
 Sys.setenv(DIGITIZER_DIRTY_STATE_FILE = dirty_state_path)
 shiny::testServer(app$server, {
