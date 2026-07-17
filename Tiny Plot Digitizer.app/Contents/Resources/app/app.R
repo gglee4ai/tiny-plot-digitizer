@@ -3073,7 +3073,6 @@ server <- function(input, output, session) {
           )
         )
       ),
-      size = "s",
       easyClose = TRUE,
       footer = tagList(
         modalButton("취소"),
@@ -3259,8 +3258,7 @@ server <- function(input, output, session) {
         title = "포인트 그룹변경",
         "변경할 다른 그룹이 없습니다. 그룹을 먼저 추가하세요.",
         footer = modalButton("확인"),
-        easyClose = TRUE,
-        size = "s"
+        easyClose = TRUE
       ))
       return()
     }
@@ -3291,8 +3289,7 @@ server <- function(input, output, session) {
           "confirm_point_series_change", "그룹 변경", class = "btn-primary"
         )
       ),
-      easyClose = FALSE,
-      size = "s"
+      easyClose = FALSE
     ))
   }, ignoreInit = TRUE)
 
@@ -4050,8 +4047,7 @@ server <- function(input, output, session) {
         actionButton("cancel_point_delete", "N 취소"),
         actionButton("confirm_point_delete", "Y 제거", class = "btn-danger")
       ),
-      easyClose = FALSE,
-      size = "s"
+      easyClose = FALSE
     ))
   }, ignoreInit = TRUE)
 
