@@ -75,6 +75,19 @@ legacy_series <- app$series_from_metadata(legacy_metadata$display_styles)
 expect_equal(
   legacy_series$name, 'legacy: "series"', "구버전 CSV 그룹 헤더"
 )
+expect_equal(
+  legacy_series$color, "#1f77b4", "영문 그룹 색상 이름 읽기"
+)
+expect_error(
+  app$group_color_value("#d62728"),
+  "구버전 그룹 색상 코드를 허용했습니다"
+)
+expect_equal(
+  vapply(
+    unname(app$group_color_palette), app$group_color_name, character(1)
+  ),
+  names(app$group_color_palette), "그룹 색상 코드의 영문 이름 변환"
+)
 legacy_data <- utils::read.csv(
   legacy_project_path, comment.char = "#", check.names = FALSE
 )
@@ -288,6 +301,13 @@ expect_equal(saved_data$x, c(0, 1), "저장된 X좌표 경계 제한")
 expect_equal(saved_data$y, c(0, 1), "저장된 Y좌표 경계 제한")
 
 metadata <- app$read_csv_metadata(project_path)
+expect_equal(
+  vapply(
+    metadata$display_styles,
+    function(style) as.character(style$color), character(1)
+  ),
+  c("red", "blue"), "저장된 그룹 색상의 영문 이름"
+)
 saved_series <- app$series_from_metadata(metadata$display_styles)
 if (!identical(saved_series$name, c("group01", "empty_group"))) {
   stop("포인트가 없는 그룹의 메타데이터 왕복 실패", call. = FALSE)

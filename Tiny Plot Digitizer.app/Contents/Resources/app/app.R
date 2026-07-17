@@ -894,13 +894,39 @@ series_marker_choices <- c(
   "◇ 마름모" = "5"
 )
 
-group_color_choices <- c(
-  "빨강" = "#d62728",
-  "파랑" = "#1f77b4",
-  "초록" = "#2ca02c",
-  "주황" = "#ff7f0e",
-  "보라" = "#9467bd",
-  "청록" = "#17becf"
+group_color_palette <- c(
+  red = "#ff5a5f",
+  blue = "#1f77b4",
+  green = "#2ca02c",
+  orange = "#ff7f0e",
+  purple = "#9467bd",
+  cyan = "#17becf"
+)
+group_color_code_names <- setNames(
+  names(group_color_palette), tolower(unname(group_color_palette))
+)
+
+group_color_name <- function(value) {
+  value <- tolower(trimws(as.character(value)))
+  if (length(value) != 1L || !nzchar(value)) {
+    stop("그룹 색상 이름을 확인하세요")
+  }
+  name <- unname(group_color_code_names[value])
+  if (is.na(name)) stop("지원하지 않는 그룹 색상입니다: ", value)
+  name
+}
+
+group_color_value <- function(value) {
+  value <- tolower(trimws(as.character(value)))
+  if (length(value) != 1L || !value %in% names(group_color_palette)) {
+    stop("지원하지 않는 그룹 색상 이름입니다: ", value)
+  }
+  unname(group_color_palette[value])
+}
+
+group_color_choices <- setNames(
+  unname(group_color_palette),
+  c("빨강", "파랑", "초록", "주황", "보라", "청록")
 )
 series_palette <- unname(group_color_choices)
 
@@ -955,7 +981,7 @@ series_from_metadata <- function(value) {
       id = index,
       name = item_names[index],
       marker = as.character(item$symbol),
-      color = as.character(item$color),
+      color = group_color_value(item$color),
       size = as.numeric(item$size),
       alpha = as.numeric(item$alpha),
       stringsAsFactors = FALSE
@@ -1014,7 +1040,8 @@ serialize_project_metadata <- function(
       sprintf(
         "  %s: {symbol: %s, color: %s, size: %s, alpha: %s}",
         quote_project_header(series$name[index]),
-        number(series$marker[index]), quote_project_header(series$color[index]),
+        number(series$marker[index]),
+        quote_project_header(group_color_name(series$color[index])),
         number(series$size[index]), number(series$alpha[index])
       )
     }, character(1))
@@ -1450,11 +1477,11 @@ ui <- fluidPage(
         if (!Number.isFinite(alpha)) alpha = 1;
         point.style.display = simpleMarker ? 'block' : 'none';
         point.setAttribute('d', path);
-        point.setAttribute('stroke', zoomMarkerState.color || '#d62728');
+        point.setAttribute('stroke', zoomMarkerState.color || '#ff5a5f');
         point.setAttribute('stroke-opacity', alpha);
         legacyPoint.style.display = simpleMarker ? 'none' : 'block';
         legacyPoint.textContent = zoomMarkerState.glyph || '·';
-        legacyPoint.setAttribute('fill', zoomMarkerState.color || '#d62728');
+        legacyPoint.setAttribute('fill', zoomMarkerState.color || '#ff5a5f');
         legacyPoint.setAttribute('fill-opacity', alpha);
         legacyPoint.setAttribute(
           'font-size', 18 * Number(zoomMarkerState.size || 1)

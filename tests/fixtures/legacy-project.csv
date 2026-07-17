@@ -21,7 +21,7 @@
 #   y1: {pixel: 100, value: 0}
 #   y2: {pixel: 0, value: 20}
 # display_styles:
-#   "legacy: \"series\"": {symbol: 3, color: "#1f77b4", size: 1, alpha: 0.8}
+#   "legacy: \"series\"": {symbol: 3, color: "blue", size: 1, alpha: 0.8}
 # ---
 "group","pixel_x","pixel_y","x","y"
 "legacy: ""series""",50,50,5,10
