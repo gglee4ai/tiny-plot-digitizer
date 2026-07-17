@@ -280,6 +280,47 @@ shiny::testServer(app$server, {
     identical(selected_point_id(), first_group_point),
     "이전 그룹 첫 포인트 이동"
   )
+
+  session$setInputs(previous_series = 2)
+  session$flushReact()
+  expect_true(
+    identical(rv$status, "이전 그룹에 포인트가 없습니다"),
+    "이전 그룹 이동 실패 알림"
+  )
+  session$setInputs(next_series = 2)
+  session$flushReact()
+  expect_true(identical(rv$status, ""), "그룹 이동 성공 후 이전 알림 제거")
+
+  rv$status <- "이전 그룹에 포인트가 없습니다"
+  session$setInputs(previous_point = 1)
+  session$flushReact()
+  expect_true(identical(rv$status, ""), "포인트 이동 성공 후 이전 알림 제거")
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
+  original_count <- nrow(rv$data)
+  session$setInputs(add_point = 1)
+  session$flushReact()
+  expect_true(!isTRUE(rv$add_mode), "연속입력 그룹 확인 전 대기")
+
+  session$setInputs(add_point_series = "2", confirm_add_point = 1)
+  session$flushReact()
+  expect_true(isTRUE(rv$add_mode), "연속입력 그룹 확인 후 시작")
+  expect_true(identical(rv$add_series, 2L), "연속입력 그룹 변경")
+
+  session$setInputs(overview_click = list(x = 8.2, y = 1.8))
+  session$flushReact()
+  expect_true(identical(nrow(rv$data), original_count + 1L), "연속입력 포인트 추가")
+  expect_true(identical(rv$data$series_id[nrow(rv$data)], 2L), "확인한 그룹에 포인트 추가")
+
+  session$setInputs(add_point = 2)
+  session$flushReact()
+  expect_true(!isTRUE(rv$add_mode), "연속입력 종료")
 })
 
 unlink(draft_path)

@@ -3910,6 +3910,7 @@ server <- function(input, output, session) {
     if (!identical(as.character(input$setting_series), group_id)) {
       refresh_series_choices(group_id)
     }
+    rv$status <- unsaved_status()
   }
 
   select_point_id <- function(point_id, finalize_order = TRUE) {
@@ -4355,10 +4356,6 @@ server <- function(input, output, session) {
 
   toggle_add_point <- function() {
     req(rv$data)
-    if (!length(input$setting_series) || is.na(series_row(input$setting_series))) {
-      rv$status <- "포인트를 추가할 그룹을 선택하세요"
-      return()
-    }
     if (rv$add_mode) {
       point_id <- selected_point_id()
       set_add_mode(FALSE)
@@ -4366,12 +4363,41 @@ server <- function(input, output, session) {
       refresh_controls(rv$selected)
       rv$status <- unsaved_status()
     } else {
-      set_add_mode(TRUE, input$setting_series)
-      rv$status <- "원본 이미지를 클릭하여 포인트를 연속으로 입력하세요"
+      if (!length(input$setting_series) || is.na(series_row(input$setting_series))) {
+        rv$status <- "포인트를 추가할 그룹을 선택하세요"
+        return()
+      }
+      showModal(modalDialog(
+        title = "연속입력 시작",
+        "추가할 포인트의 그룹을 확인해 주세요.",
+        selectInput(
+          "add_point_series", "포인트 그룹",
+          choices = series_choices(), selected = input$setting_series,
+          selectize = FALSE, width = "100%"
+        ),
+        footer = tagList(
+          modalButton("취소"),
+          actionButton("confirm_add_point", "연속입력 시작", class = "btn-primary")
+        ),
+        easyClose = FALSE
+      ))
     }
   }
 
   observeEvent(input$add_point, toggle_add_point(), ignoreInit = TRUE)
+
+  observeEvent(input$confirm_add_point, {
+    series_id <- suppressWarnings(as.integer(input$add_point_series))
+    if (is.na(series_row(series_id))) {
+      removeModal()
+      rv$status <- "포인트를 추가할 그룹을 선택하세요"
+      return()
+    }
+    updateSelectInput(session, "setting_series", selected = as.character(series_id))
+    set_add_mode(TRUE, series_id)
+    removeModal()
+    rv$status <- "원본 이미지를 클릭하여 포인트를 연속으로 입력하세요"
+  }, ignoreInit = TRUE)
 
   observeEvent(input$delete_point, {
     if (is.null(rv$selected) || !nrow(rv$data)) {
