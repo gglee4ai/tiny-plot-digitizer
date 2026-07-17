@@ -257,6 +257,128 @@ shiny::testServer(app$server, {
 unlink(draft_path)
 shiny::testServer(app$server, {
   session$flushReact()
+  session$setInputs(dataset = project_paths[1], zoom = 40)
+  session$flushReact()
+
+  row <- rv$selected
+  point_id <- rv$data$point_id[row]
+  original_x <- rv$data$pixel_x[row]
+  original_y <- rv$data$pixel_y[row]
+  direction <- if (original_x <= rv$image_width / 2) 1 else -1
+  intermediate_x <- original_x + direction * 4
+  final_x <- original_x + direction * 5
+
+  session$setInputs(key_point_zoom_recenter = list(
+    point_id = point_id,
+    pixel_x = intermediate_x,
+    pixel_y = original_y,
+    request_id = 1,
+    nonce = 1
+  ))
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], original_x)) &&
+      isTRUE(all.equal(rv$zoom_center_x, intermediate_x)),
+    "클라이언트 연속 이동 중 포인트를 저장하지 않고 확대 중심 반영"
+  )
+  expect_true(
+    identical(length(rv$point_history), 0L) &&
+      !isTRUE(rv$movement_history_active) &&
+      identical(rv$zoom_marker_request_id, 1L),
+    "클라이언트 연속 이동 중간 갱신은 실행취소 기록에서 제외"
+  )
+
+  session$setInputs(key_point_move_commit = list(
+    point_id = point_id,
+    pixel_x = final_x,
+    pixel_y = original_y,
+    request_id = 2,
+    recenter = FALSE,
+    nonce = 2
+  ))
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], final_x)) &&
+      identical(length(rv$point_history), 1L) &&
+      !isTRUE(rv$movement_history_active) &&
+      identical(rv$zoom_marker_request_id, 2L),
+    "클라이언트 연속 이동 최종 좌표와 단일 실행취소 기록"
+  )
+
+  session$setInputs(key_point_move_commit = list(
+    point_id = max(rv$data$point_id) + 1L,
+    pixel_x = original_x,
+    pixel_y = original_y,
+    request_id = 3,
+    recenter = TRUE,
+    nonce = 3
+  ))
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], final_x)) &&
+      identical(length(rv$point_history), 1L) &&
+      identical(rv$zoom_marker_request_id, 2L),
+    "선택이 바뀐 뒤 도착한 포인트 이동 무시"
+  )
+
+  undo_target()
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(rv$data$pixel_x[rv$selected], original_x)) &&
+      isTRUE(all.equal(rv$data$pixel_y[rv$selected], original_y)),
+    "클라이언트 포인트 이동 실행취소"
+  )
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1], zoom = 4)
+  session$flushReact()
+
+  row <- rv$selected
+  start_x <- rv$data$pixel_x[row]
+  start_y <- rv$data$pixel_y[row]
+  direction <- if (start_x >= 3) -1 else 1
+  initial_center <- c(x = rv$zoom_center_x, y = rv$zoom_center_y)
+  initial_window <- zoom_window()
+  expect_true(
+    isTRUE(all.equal(initial_center, c(x = start_x, y = start_y))),
+    "확대 화면 초기 중심"
+  )
+
+  expect_true(
+    set_selected_point_position(start_x + direction, start_y),
+    "확대 화면 내부 포인트 이동"
+  )
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(c(x = rv$zoom_center_x, y = rv$zoom_center_y), initial_center)),
+    "확대 범위 내부 배경 중심 유지"
+  )
+  expect_true(
+    isTRUE(all.equal(zoom_window(), initial_window)),
+    "확대 범위 내부 화면 유지"
+  )
+
+  outside_x <- start_x + direction * 3
+  expect_true(
+    set_selected_point_position(outside_x, start_y),
+    "확대 화면 경계 밖 포인트 이동"
+  )
+  session$flushReact()
+  expect_true(
+    isTRUE(all.equal(
+      c(x = rv$zoom_center_x, y = rv$zoom_center_y),
+      c(x = outside_x, y = start_y)
+    )),
+    "확대 범위 경계 밖 배경 재정렬"
+  )
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
   session$setInputs(dataset = project_paths[1])
   session$flushReact()
 

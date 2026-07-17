@@ -1331,6 +1331,12 @@ ui <- fluidPage(
       .plot-stack .shiny-plot-output { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
       #overview_image { z-index: 1; pointer-events: none; }
       #overview { z-index: 2; background: transparent; }
+      .zoom-plot-stack { position: relative; height: 430px; }
+      .zoom-plot-stack .shiny-plot-output { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+      #zoom_image { z-index: 1; pointer-events: none; }
+      #zoom_plot { z-index: 2; background: transparent; }
+      #zoom_marker { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
+      #zoom_marker_glyph { display: none; }
       .btn-primary { background: #2f5d50; border-color: #2f5d50; }
       .btn-primary:hover { background: #24483e; border-color: #24483e; }
     ")),
@@ -1398,6 +1404,146 @@ ui <- fluidPage(
         var button = document.getElementById('add_point');
         if (button) button.classList.toggle('add-mode-active', Boolean(message.active));
       });
+
+      var zoomMarkerState = null;
+      var pointMoveKeys = {};
+      var localPointMoveActive = false;
+      var localPointMoveChanged = false;
+      var latestZoomMarkerRequest = 0;
+      var pendingZoomRecenterRequest = 0;
+
+      function positionZoomMarker() {
+        var marker = document.getElementById('zoom_marker_glyph');
+        var stack = document.querySelector('.zoom-plot-stack');
+        if (!marker || !stack || !zoomMarkerState || !zoomMarkerState.visible) {
+          if (marker) marker.style.display = 'none';
+          return;
+        }
+        var width = stack.clientWidth;
+        var height = stack.clientHeight;
+        var radius = Number(zoomMarkerState.radius);
+        if (!(width > 0 && height > 0 && radius > 0)) {
+          marker.style.display = 'none';
+          return;
+        }
+        var halfWidth = radius * Math.max(1, width / height);
+        var halfHeight = radius * Math.max(1, height / width);
+        var x = (Number(zoomMarkerState.pixel_x) -
+          (Number(zoomMarkerState.center_x) - halfWidth)) * width / (2 * halfWidth);
+        var y = (Number(zoomMarkerState.pixel_y) -
+          (Number(zoomMarkerState.center_y) - halfHeight)) * height / (2 * halfHeight);
+        var markerPadding = 22;
+        x = Math.max(markerPadding, Math.min(width - markerPadding, x));
+        y = Math.max(markerPadding, Math.min(height - markerPadding, y));
+        marker.setAttribute('transform', 'translate(' + x + ' ' + y + ')');
+        marker.style.display = 'block';
+      }
+
+      Shiny.addCustomMessageHandler('set-zoom-marker', function(message) {
+        var previous = zoomMarkerState;
+        var acknowledgedRequest = Number(message.request_id || 0);
+        var samePoint = previous && previous.visible && message.visible &&
+          String(previous.point_id) === String(message.point_id);
+        if (pendingZoomRecenterRequest &&
+            acknowledgedRequest >= pendingZoomRecenterRequest) {
+          pendingZoomRecenterRequest = 0;
+        }
+        if (samePoint &&
+            (localPointMoveActive || acknowledgedRequest < latestZoomMarkerRequest)) {
+          message.pixel_x = previous.pixel_x;
+          message.pixel_y = previous.pixel_y;
+        } else if (!samePoint) {
+          pointMoveKeys = {};
+          localPointMoveActive = false;
+          localPointMoveChanged = false;
+          pendingZoomRecenterRequest = 0;
+        }
+        zoomMarkerState = message;
+        positionZoomMarker();
+        if (localPointMoveActive && markerNeedsRecentering() &&
+            !pendingZoomRecenterRequest) {
+          sendZoomMarkerRecenter();
+        }
+      });
+
+      window.addEventListener('resize', positionZoomMarker);
+
+      function markerNeedsRecentering() {
+        var stack = document.querySelector('.zoom-plot-stack');
+        if (!stack || !zoomMarkerState || !zoomMarkerState.visible) return false;
+        var width = stack.clientWidth;
+        var height = stack.clientHeight;
+        var radius = Number(zoomMarkerState.radius);
+        if (!(width > 0 && height > 0 && radius > 0)) return false;
+        var halfWidth = radius * Math.max(1, width / height);
+        var halfHeight = radius * Math.max(1, height / width);
+        return Math.abs(Number(zoomMarkerState.pixel_x) -
+          Number(zoomMarkerState.center_x)) >= halfWidth * 0.5 ||
+          Math.abs(Number(zoomMarkerState.pixel_y) -
+          Number(zoomMarkerState.center_y)) >= halfHeight * 0.5;
+      }
+
+      function sendZoomMarkerRecenter() {
+        if (!zoomMarkerState || !zoomMarkerState.visible) return false;
+        latestZoomMarkerRequest += 1;
+        pendingZoomRecenterRequest = latestZoomMarkerRequest;
+        Shiny.setInputValue('key_point_zoom_recenter', {
+          point_id: zoomMarkerState.point_id,
+          pixel_x: zoomMarkerState.pixel_x,
+          pixel_y: zoomMarkerState.pixel_y,
+          request_id: latestZoomMarkerRequest,
+          nonce: Date.now() + Math.random()
+        }, {priority: 'event'});
+        return true;
+      }
+
+      function sendZoomMarkerMove(recenter) {
+        if (!zoomMarkerState || !zoomMarkerState.visible ||
+            !localPointMoveChanged) return false;
+        latestZoomMarkerRequest += 1;
+        Shiny.setInputValue('key_point_move_commit', {
+          point_id: zoomMarkerState.point_id,
+          pixel_x: zoomMarkerState.pixel_x,
+          pixel_y: zoomMarkerState.pixel_y,
+          request_id: latestZoomMarkerRequest,
+          recenter: recenter,
+          nonce: Date.now() + Math.random()
+        }, {priority: 'event'});
+        localPointMoveChanged = false;
+        return true;
+      }
+
+      function moveZoomMarker(direction) {
+        if (!zoomMarkerState || !zoomMarkerState.visible) return false;
+        var stepInput = document.querySelector('input[name=move_step]:checked');
+        var step = Number(stepInput ? stepInput.value : 1);
+        if (!(step > 0)) step = 1;
+        var x = Number(zoomMarkerState.pixel_x);
+        var y = Number(zoomMarkerState.pixel_y);
+        if (direction === 'left') x = Math.max(0, x - step);
+        if (direction === 'right') x = Math.min(Number(zoomMarkerState.image_width), x + step);
+        if (direction === 'up') y = Math.max(0, y - step);
+        if (direction === 'down') y = Math.min(Number(zoomMarkerState.image_height), y + step);
+        localPointMoveActive = true;
+        if (x !== Number(zoomMarkerState.pixel_x) || y !== Number(zoomMarkerState.pixel_y)) {
+          zoomMarkerState.pixel_x = x;
+          zoomMarkerState.pixel_y = y;
+          localPointMoveChanged = true;
+          positionZoomMarker();
+          if (markerNeedsRecentering() && !pendingZoomRecenterRequest) {
+            sendZoomMarkerRecenter();
+          }
+        }
+        return true;
+      }
+
+      function commitZoomMarkerMove() {
+        if (!localPointMoveActive) return false;
+        localPointMoveActive = false;
+        sendZoomMarkerMove(markerNeedsRecentering());
+        localPointMoveChanged = false;
+        return true;
+      }
 
       document.addEventListener('change', function(event) {
         if (event.target.id === 'point') {
@@ -1474,10 +1620,19 @@ ui <- fluidPage(
           if (historyButton) historyButton.click();
           return;
         }
+        var activeEditMode = document.querySelector(
+          '.editor-tabs .nav-tabs li.active a'
+        );
+        var pointModeActive = activeEditMode &&
+          activeEditMode.getAttribute('data-value') === 'point';
         var directions = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'};
         if (directions[event.key]) {
           event.preventDefault();
           event.stopImmediatePropagation();
+          if (pointModeActive && moveZoomMarker(directions[event.key])) {
+            pointMoveKeys[event.key] = true;
+            return;
+          }
           Shiny.setInputValue('key_move', {
             direction: directions[event.key],
             start: !event.repeat,
@@ -1485,11 +1640,6 @@ ui <- fluidPage(
           }, {priority: 'event'});
           return;
         }
-        var activeEditMode = document.querySelector(
-          '.editor-tabs .nav-tabs li.active a'
-        );
-        var pointModeActive = activeEditMode &&
-          activeEditMode.getAttribute('data-value') === 'point';
         if (pointModeActive && !accelerator && !event.altKey &&
             (event.key === 'Delete' || event.key === 'Backspace')) {
           event.preventDefault();
@@ -1518,10 +1668,18 @@ ui <- fluidPage(
 
       document.addEventListener('keyup', function(event) {
         if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        if (pointMoveKeys[event.key]) {
+          delete pointMoveKeys[event.key];
+          if (!Object.keys(pointMoveKeys).length) commitZoomMarkerMove();
+          return;
+        }
         endKeyboardMovement();
       }, true);
 
-      window.addEventListener('blur', endKeyboardMovement);
+      window.addEventListener('blur', function() {
+        pointMoveKeys = {};
+        if (!commitZoomMarkerMove()) endKeyboardMovement();
+      });
 
       $(document).on('shown.bs.modal', '.modal', function() {
         if (!document.getElementById('point_delete_modal_marker')) return;
@@ -1846,7 +2004,30 @@ ui <- fluidPage(
       width = 3,
       class = "editor-column detail-column",
       div(class = "plot-title", textOutput("detail_title")),
-      plotOutput("zoom_plot", height = "430px", click = "zoom_click")
+      div(
+        class = "zoom-plot-stack",
+        plotOutput("zoom_image", height = "100%"),
+        plotOutput("zoom_plot", height = "100%", click = "zoom_click"),
+        tags$svg(
+          id = "zoom_marker", width = "100%", height = "100%",
+          `aria-hidden` = "true",
+          tags$g(
+            id = "zoom_marker_glyph",
+            tags$circle(
+              cx = 0, cy = 0, r = 20, fill = "none",
+              stroke = "#d62728", `stroke-width` = 2
+            ),
+            tags$line(
+              x1 = -6, y1 = 0, x2 = 6, y2 = 0,
+              stroke = "#d62728", `stroke-width` = 2
+            ),
+            tags$line(
+              x1 = 0, y1 = -6, x2 = 0, y2 = 6,
+              stroke = "#d62728", `stroke-width` = 2
+            )
+          )
+        )
+      )
     )
   )
 )
@@ -1996,6 +2177,8 @@ server <- function(input, output, session) {
     add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_navigation = NULL,
     point_order_dirty = FALSE,
+    zoom_center_x = NULL, zoom_center_y = NULL,
+    zoom_marker_request_id = 0L,
     movement_history_active = FALSE, movement_history_mode = NULL,
     updating_calibration_inputs = FALSE,
     calibration_target = NULL, calibration_point = NULL,
@@ -2299,6 +2482,8 @@ server <- function(input, output, session) {
     rv$add_series <- NULL
     rv$selected <- NULL
     rv$point_order_dirty <- FALSE
+    rv$zoom_center_x <- NULL
+    rv$zoom_center_y <- NULL
     rv$movement_history_active <- FALSE
     rv$movement_history_mode <- NULL
     rv$initial_file_snapshot <- NULL
@@ -2729,6 +2914,7 @@ server <- function(input, output, session) {
     setting_series <- if (length(input$setting_series)) input$setting_series else NULL
     refresh_series_choices(setting_series)
     update_point_choices()
+    center_zoom_on_target(force = TRUE)
     invisible()
   }
 
@@ -2911,6 +3097,7 @@ server <- function(input, output, session) {
     }
     update_calibration_inputs()
     update_point_choices()
+    center_zoom_on_target(force = TRUE)
     invisible()
   }
 
@@ -3141,6 +3328,85 @@ server <- function(input, output, session) {
     identical(rv$active_edit_mode, mode)
   }
 
+  current_zoom_target <- function() {
+    if (is.null(rv$data) || is.null(rv$image_width) || is.null(rv$image_height)) {
+      return(NULL)
+    }
+    if (active_mode_is("calibration")) {
+      if (is.null(rv$calibration) || is.null(rv$calibration_target) ||
+          is.null(rv$calibration_point)) return(NULL)
+      point <- if (identical(rv$calibration_target, "axis")) {
+        rv$calibration$axis_points[[rv$calibration_point]]
+      } else if (identical(rv$calibration_target, "box")) {
+        rv$calibration$box[[rv$calibration_point]]
+      } else {
+        NULL
+      }
+      if (is.null(point)) return(NULL)
+      return(c(pixel_x = as.numeric(point$pixel_x), pixel_y = as.numeric(point$pixel_y)))
+    }
+    if (is.null(rv$selected) || !nrow(rv$data)) return(NULL)
+    row <- as.integer(rv$selected)
+    if (row < 1L || row > nrow(rv$data)) return(NULL)
+    c(pixel_x = rv$data$pixel_x[row], pixel_y = rv$data$pixel_y[row])
+  }
+
+  set_zoom_center <- function(pixel_x, pixel_y, force = FALSE) {
+    pixel_x <- as.numeric(pixel_x)
+    pixel_y <- as.numeric(pixel_y)
+    if (!is.finite(pixel_x) || !is.finite(pixel_y)) return(invisible(FALSE))
+    radius <- suppressWarnings(as.numeric(input$zoom))
+    if (length(radius) != 1L || !is.finite(radius) || radius <= 0) radius <- 40
+    threshold <- radius * 0.65
+    recenter <- force || is.null(rv$zoom_center_x) || is.null(rv$zoom_center_y) ||
+      abs(pixel_x - rv$zoom_center_x) > threshold ||
+      abs(pixel_y - rv$zoom_center_y) > threshold
+    if (!recenter) return(invisible(FALSE))
+    rv$zoom_center_x <- pixel_x
+    rv$zoom_center_y <- pixel_y
+    invisible(TRUE)
+  }
+
+  center_zoom_on_target <- function(force = FALSE) {
+    target <- current_zoom_target()
+    if (is.null(target)) {
+      if (force) {
+        rv$zoom_center_x <- NULL
+        rv$zoom_center_y <- NULL
+      }
+      return(invisible(FALSE))
+    }
+    set_zoom_center(target[["pixel_x"]], target[["pixel_y"]], force)
+  }
+
+  observeEvent(input$zoom, center_zoom_on_target(force = TRUE), ignoreInit = TRUE)
+
+  observe({
+    target <- current_zoom_target()
+    point_id <- selected_point_id()
+    radius <- suppressWarnings(as.numeric(input$zoom))
+    visible <- active_mode_is("point") && !is.null(target) &&
+      !is.null(point_id) && !is.null(rv$zoom_center_x) &&
+      !is.null(rv$zoom_center_y) && length(radius) == 1L &&
+      is.finite(radius) && radius > 0
+    if (!visible) {
+      session$sendCustomMessage("set-zoom-marker", list(visible = FALSE))
+      return()
+    }
+    session$sendCustomMessage("set-zoom-marker", list(
+      visible = TRUE,
+      point_id = point_id,
+      pixel_x = unname(target[["pixel_x"]]),
+      pixel_y = unname(target[["pixel_y"]]),
+      center_x = rv$zoom_center_x,
+      center_y = rv$zoom_center_y,
+      radius = radius,
+      image_width = rv$image_width,
+      image_height = rv$image_height,
+      request_id = rv$zoom_marker_request_id
+    ))
+  })
+
   discard_edit_mode_changes <- function(mode) {
     if (identical(mode, "calibration")) {
       rv$calibration <- rv$calibration_baseline
@@ -3172,6 +3438,7 @@ server <- function(input, output, session) {
     capture_mode_baseline(mode)
     if (identical(mode, "calibration")) set_add_mode(FALSE)
     if (update_input) update_edit_mode_input(mode)
+    center_zoom_on_target(force = TRUE)
     invisible()
   }
 
@@ -3802,6 +4069,7 @@ server <- function(input, output, session) {
     req(selection[2] %in% valid_points)
     rv$calibration_target <- selection[1]
     rv$calibration_point <- selection[2]
+    center_zoom_on_target(force = TRUE)
   }, ignoreInit = TRUE)
 
   observeEvent(input$axis_pixel_commit, {
@@ -3914,6 +4182,7 @@ server <- function(input, output, session) {
     if (!identical(as.character(input$setting_series), group_id)) {
       refresh_series_choices(group_id)
     }
+    center_zoom_on_target(force = TRUE)
     rv$status <- unsaved_status()
   }
 
@@ -4005,13 +4274,15 @@ server <- function(input, output, session) {
     remember_point_change()
     rv$data <- data
     rv$point_order_dirty <- TRUE
+    center_zoom_on_target()
     mark_mode_changed("point")
     update_point_label(row)
     invisible(TRUE)
   }
 
   set_selected_point_position <- function(
-    pixel_x, pixel_y, status = "포인트 위치가 변경되었습니다"
+    pixel_x, pixel_y, status = "포인트 위치가 변경되었습니다",
+    force_zoom_center = FALSE
   ) {
     row <- selected_row()
     pixel_x <- round_pixel_coordinate(max(0, min(rv$image_width, pixel_x)))
@@ -4022,6 +4293,7 @@ server <- function(input, output, session) {
     rv$data$pixel_x[row] <- pixel_x
     rv$data$pixel_y[row] <- pixel_y
     rv$point_order_dirty <- TRUE
+    center_zoom_on_target(force = force_zoom_center)
     mark_mode_changed("point", status)
     update_point_label(row)
     invisible(TRUE)
@@ -4034,6 +4306,7 @@ server <- function(input, output, session) {
     remember_calibration_change()
     rv$calibration <- calibration
     rv$point_order_dirty <- TRUE
+    center_zoom_on_target()
     mark_mode_changed("calibration", status)
     update_point_choices()
     TRUE
@@ -4206,6 +4479,48 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$key_move_end, end_movement_history())
+
+  observeEvent(input$key_point_zoom_recenter, {
+    req(active_mode_is("point"), rv$data)
+    point_id <- suppressWarnings(as.integer(input$key_point_zoom_recenter$point_id))
+    pixel_x <- suppressWarnings(as.numeric(input$key_point_zoom_recenter$pixel_x))
+    pixel_y <- suppressWarnings(as.numeric(input$key_point_zoom_recenter$pixel_y))
+    request_id <- suppressWarnings(as.integer(input$key_point_zoom_recenter$request_id))
+    if (length(point_id) != 1L || is.na(point_id) ||
+        !identical(point_id, selected_point_id()) ||
+        length(pixel_x) != 1L || !is.finite(pixel_x) ||
+        length(pixel_y) != 1L || !is.finite(pixel_y) ||
+        length(request_id) != 1L || is.na(request_id) ||
+        request_id < rv$zoom_marker_request_id) return()
+    rv$zoom_marker_request_id <- request_id
+    set_zoom_center(
+      round_pixel_coordinate(max(0, min(rv$image_width, pixel_x))),
+      round_pixel_coordinate(max(0, min(rv$image_height, pixel_y))),
+      force = TRUE
+    )
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$key_point_move_commit, {
+    req(active_mode_is("point"), rv$data)
+    point_id <- suppressWarnings(as.integer(input$key_point_move_commit$point_id))
+    pixel_x <- suppressWarnings(as.numeric(input$key_point_move_commit$pixel_x))
+    pixel_y <- suppressWarnings(as.numeric(input$key_point_move_commit$pixel_y))
+    request_id <- suppressWarnings(as.integer(input$key_point_move_commit$request_id))
+    if (length(point_id) != 1L || is.na(point_id) ||
+        !identical(point_id, selected_point_id()) ||
+        length(pixel_x) != 1L || !is.finite(pixel_x) ||
+        length(pixel_y) != 1L || !is.finite(pixel_y)) return()
+    if (length(request_id) == 1L && !is.na(request_id) &&
+        request_id < rv$zoom_marker_request_id) return()
+    end_movement_history()
+    if (length(request_id) == 1L && !is.na(request_id)) {
+      rv$zoom_marker_request_id <- request_id
+    }
+    set_selected_point_position(
+      pixel_x, pixel_y,
+      force_zoom_center = isTRUE(input$key_point_move_commit$recenter)
+    )
+  }, ignoreInit = TRUE)
 
   undo_target <- function() {
     end_movement_history()
@@ -4605,31 +4920,24 @@ server <- function(input, output, session) {
     }
   }, res = 110, bg = "transparent")
 
-  selected_target <- reactive({
-    req(rv$data, rv$image_width, rv$image_height)
-    if (active_mode_is("calibration")) {
-      req(rv$calibration$type == "projective")
-      if (identical(rv$calibration_target, "axis")) {
-        req(rv$calibration_point)
-        point <- rv$calibration$axis_points[[rv$calibration_point]]
-      } else {
-        req(identical(rv$calibration_target, "box"), rv$calibration_point)
-        point <- rv$calibration$box[[rv$calibration_point]]
-      }
-      return(c(pixel_x = as.numeric(point$pixel_x), pixel_y = as.numeric(point$pixel_y)))
-    }
-    row <- selected_row()
-    c(pixel_x = rv$data$pixel_x[row], pixel_y = rv$data$pixel_y[row])
+  zoom_window <- reactive({
+    req(
+      !is.null(rv$zoom_center_x), !is.null(rv$zoom_center_y),
+      rv$image_width, rv$image_height
+    )
+    radius <- as.numeric(input$zoom)
+    list(
+      radius = radius,
+      xlim = c(rv$zoom_center_x - radius, rv$zoom_center_x + radius),
+      ylim = c(rv$zoom_center_y + radius, rv$zoom_center_y - radius)
+    )
   })
 
-  output$zoom_plot <- renderPlot({
-    req(rv$data, rv$image_width, rv$image_height, rv$raster_matrix)
-    radius <- as.numeric(input$zoom)
-    target <- selected_target()
-    x <- target[["pixel_x"]]
-    y <- target[["pixel_y"]]
-    xlim <- c(x - radius, x + radius)
-    ylim <- c(y + radius, y - radius)
+  output$zoom_image <- renderPlot({
+    req(rv$image_width, rv$image_height, rv$raster_matrix)
+    window <- zoom_window()
+    xlim <- window$xlim
+    ylim <- window$ylim
     draw_plot_window(xlim, ylim)
 
     width <- rv$image_width
@@ -4644,6 +4952,15 @@ server <- function(input, output, session) {
       (x_left + 1L):x_right
     )
     rasterImage(crop, x_left, y_bottom, x_right, y_top)
+  }, res = 130)
+
+  output$zoom_plot <- renderPlot({
+    req(rv$data, rv$image_width, rv$image_height)
+    window <- zoom_window()
+    xlim <- window$xlim
+    ylim <- window$ylim
+    draw_plot_window(xlim, ylim, background = NA)
+
     selected_box_point <- if (
       active_mode_is("calibration") && identical(rv$calibration_target, "box")
     ) rv$calibration_point else NULL
@@ -4658,12 +4975,11 @@ server <- function(input, output, session) {
     nearby <- rv$data$pixel_x >= xlim[1] & rv$data$pixel_x <= xlim[2] &
       rv$data$pixel_y >= ylim[2] & rv$data$pixel_y <= ylim[1]
     nearby_rows <- which(nearby)
-    draw_series_points(nearby_rows, cex = 1.15)
     if (!active_mode_is("calibration") && !is.null(rv$selected)) {
-      selected_cex <- 8 * 20 / radius
-      draw_selected_point(rv$selected, cex = selected_cex)
+      nearby_rows <- setdiff(nearby_rows, rv$selected)
     }
-  }, res = 130)
+    draw_series_points(nearby_rows, cex = 1.15)
+  }, res = 130, bg = "transparent")
 
   output$symbol_swatch <- renderPlot({
     req(rv$series)
