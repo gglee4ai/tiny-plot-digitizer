@@ -1362,6 +1362,7 @@ ui <- fluidPage(
       .zoom-plot-stack .shiny-plot-output { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
       #zoom_image { z-index: 1; pointer-events: none; }
       #zoom_plot { z-index: 2; background: transparent; }
+      .plot-stack .recalculating, .zoom-plot-stack .recalculating { --shiny-fade-opacity: 1; }
       #zoom_marker { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
       #zoom_marker_glyph { display: none; }
       .btn-primary { background: #2f5d50; border-color: #2f5d50; }
@@ -1445,6 +1446,10 @@ ui <- fluidPage(
       var localPointMoveChanged = false;
       var latestZoomMarkerRequest = 0;
       var pendingZoomRecenterRequest = 0;
+      var pendingPointNavigationSteps = 0;
+      var pointNavigationInFlight = false;
+      var pointNavigationRequestId = 0;
+      var pointNavigationTimer = null;
 
       function zoomGuideRingRadius() {
         var zoomRadius = Number(zoomMarkerState && zoomMarkerState.radius);
@@ -1629,6 +1634,46 @@ ui <- fluidPage(
         return true;
       }
 
+      function flushPointNavigation() {
+        if (pointNavigationTimer) {
+          window.clearTimeout(pointNavigationTimer);
+          pointNavigationTimer = null;
+        }
+        if (pointNavigationInFlight || pendingPointNavigationSteps === 0) return false;
+        var steps = pendingPointNavigationSteps;
+        pendingPointNavigationSteps = 0;
+        pointNavigationInFlight = true;
+        pointNavigationRequestId += 1;
+        Shiny.setInputValue('key_point_nav', {
+          steps: steps,
+          request_id: pointNavigationRequestId,
+          nonce: Date.now() + Math.random()
+        }, {priority: 'event'});
+        return true;
+      }
+
+      function schedulePointNavigation(delay) {
+        if (pointNavigationInFlight || pointNavigationTimer ||
+            pendingPointNavigationSteps === 0) return;
+        pointNavigationTimer = window.setTimeout(function() {
+          pointNavigationTimer = null;
+          flushPointNavigation();
+        }, delay);
+      }
+
+      function queuePointNavigation(step, repeated) {
+        pendingPointNavigationSteps += step;
+        if (pointNavigationInFlight) return;
+        if (repeated) schedulePointNavigation(80); else flushPointNavigation();
+      }
+
+      Shiny.addCustomMessageHandler('point-navigation-complete', function(message) {
+        var requestId = Number(message.request_id || 0);
+        if (requestId && requestId < pointNavigationRequestId) return;
+        pointNavigationInFlight = false;
+        if (pendingPointNavigationSteps !== 0) schedulePointNavigation(0);
+      });
+
       document.addEventListener('change', function(event) {
         if (event.target.id === 'point') {
           Shiny.setInputValue('point_user_selection', {
@@ -1735,13 +1780,13 @@ ui <- fluidPage(
         if (event.key === '[') {
           if (!pointModeActive) return;
           event.preventDefault();
-          Shiny.setInputValue('key_point_nav', 'previous', {priority: 'event'});
+          queuePointNavigation(-1, event.repeat);
           return;
         }
         if (event.key === ']') {
           if (!pointModeActive) return;
           event.preventDefault();
-          Shiny.setInputValue('key_point_nav', 'next', {priority: 'event'});
+          queuePointNavigation(1, event.repeat);
           return;
         }
       }, true);
@@ -1751,6 +1796,10 @@ ui <- fluidPage(
       }
 
       document.addEventListener('keyup', function(event) {
+        if (event.key === '[' || event.key === ']') {
+          flushPointNavigation();
+          return;
+        }
         if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
         if (pointMoveKeys[event.key]) {
           delete pointMoveKeys[event.key];
@@ -1761,6 +1810,7 @@ ui <- fluidPage(
       }, true);
 
       window.addEventListener('blur', function() {
+        flushPointNavigation();
         pointMoveKeys = {};
         if (!commitZoomMarkerMove()) endKeyboardMovement();
       });
@@ -4320,12 +4370,19 @@ server <- function(input, output, session) {
     if (!is.na(row)) select_point(row, rebuild_choices = rebuild_choices)
   }
 
-  navigate_point <- function(direction) {
+  navigate_point <- function(direction, steps = 1L) {
     current_id <- selected_point_id()
     rebuild_choices <- ensure_point_order(current_id)
     row <- selected_row()
-    next_row <- if (direction == "previous") max(1, row - 1) else min(nrow(rv$data), row + 1)
+    steps <- suppressWarnings(as.integer(steps))
+    if (length(steps) != 1L || is.na(steps) || steps < 1L) steps <- 1L
+    next_row <- if (direction == "previous") {
+      max(1L, row - steps)
+    } else {
+      min(nrow(rv$data), row + steps)
+    }
     select_point(next_row, rebuild_choices = rebuild_choices)
+    invisible(next_row != row)
   }
 
   navigate_series <- function(direction) {
@@ -4373,8 +4430,31 @@ server <- function(input, output, session) {
   observeEvent(input$next_point, navigate_point("next"), ignoreInit = TRUE)
   observeEvent(input$next_series, navigate_series("next"), ignoreInit = TRUE)
   observeEvent(input$key_point_nav, {
-    if (!active_mode_is("point")) return()
-    navigate_point(input$key_point_nav)
+    payload <- input$key_point_nav
+    request_id <- if (is.list(payload)) {
+      suppressWarnings(as.integer(payload$request_id))
+    } else {
+      0L
+    }
+    signed_steps <- if (is.list(payload)) {
+      suppressWarnings(as.integer(payload$steps))
+    } else if (identical(payload, "previous")) {
+      -1L
+    } else {
+      1L
+    }
+    moved <- FALSE
+    if (active_mode_is("point") && length(signed_steps) == 1L &&
+        !is.na(signed_steps) && signed_steps != 0L) {
+      moved <- navigate_point(
+        if (signed_steps < 0L) "previous" else "next",
+        abs(signed_steps)
+      )
+    }
+    session$sendCustomMessage("point-navigation-complete", list(
+      request_id = if (length(request_id) == 1L && !is.na(request_id)) request_id else 0L,
+      moved = isTRUE(moved)
+    ))
   })
 
   observeEvent(input$point_user_selection, {

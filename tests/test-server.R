@@ -434,6 +434,17 @@ shiny::testServer(app$server, {
     identical(selected_point_id(), first_group_point),
     "포인트 목록 직접 선택"
   )
+
+  session$setInputs(
+    key_point_nav = list(steps = 2L, request_id = 1L, nonce = 1)
+  )
+  session$flushReact()
+  expect_true(identical(selected_point_id(), 8L), "단축키 반복 다음 이동 병합")
+  session$setInputs(
+    key_point_nav = list(steps = -1L, request_id = 2L, nonce = 2)
+  )
+  session$flushReact()
+  expect_true(identical(selected_point_id(), 9L), "단축키 반복 이전 이동 병합")
 })
 
 unlink(draft_path)
