@@ -295,6 +295,23 @@ shiny::testServer(app$server, {
   session$setInputs(previous_point = 1)
   session$flushReact()
   expect_true(identical(rv$status, ""), "포인트 이동 성공 후 이전 알림 제거")
+
+  for (index in seq_len(10)) {
+    session$setInputs(next_point = index)
+    session$flushReact()
+  }
+  expect_true(identical(selected_point_id(), 8L), "다음 포인트 연속 입력 끝점 고정")
+
+  session$setInputs(
+    point_user_selection = list(
+      value = as.character(first_group_point), nonce = 1
+    )
+  )
+  session$flushReact()
+  expect_true(
+    identical(selected_point_id(), first_group_point),
+    "포인트 목록 직접 선택"
+  )
 })
 
 unlink(draft_path)

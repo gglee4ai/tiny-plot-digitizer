@@ -1381,9 +1381,8 @@ ui <- fluidPage(
         });
         if (message.selected) {
           element.value = String(message.selected);
-          Shiny.setInputValue('point', String(message.selected), {priority: 'event'});
         } else {
-          Shiny.setInputValue('point', null, {priority: 'event'});
+          element.value = '';
         }
       });
 
@@ -1393,7 +1392,6 @@ ui <- fluidPage(
         var selected = message.selected == null ? '' : String(message.selected);
         if (element.value === selected) return;
         element.value = selected;
-        Shiny.setInputValue('point', selected || null, {priority: 'event'});
       });
 
       Shiny.addCustomMessageHandler('set-add-mode-state', function(message) {
@@ -1402,6 +1400,12 @@ ui <- fluidPage(
       });
 
       document.addEventListener('change', function(event) {
+        if (event.target.id === 'point') {
+          Shiny.setInputValue('point_user_selection', {
+            value: event.target.value,
+            nonce: Date.now() + Math.random()
+          }, {priority: 'event'});
+        }
         if (event.target.matches('input[type=radio][name=calibration_point]')) {
           Shiny.setInputValue('calibration_point', event.target.value, {priority: 'event'});
         }
@@ -3977,12 +3981,12 @@ server <- function(input, output, session) {
     navigate_point(input$key_point_nav)
   })
 
-  observeEvent(input$point, {
-    req(rv$data, input$point)
-    point_id <- as.integer(input$point)
+  observeEvent(input$point_user_selection, {
+    req(rv$data, input$point_user_selection$value)
+    point_id <- as.integer(input$point_user_selection$value)
     if (identical(point_id, selected_point_id())) return()
     select_point_id(point_id)
-  })
+  }, ignoreInit = TRUE)
 
   move_selected <- function(direction) {
     row <- selected_row()
