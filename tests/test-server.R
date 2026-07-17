@@ -8,8 +8,19 @@ project_dir <- dirname(dirname(normalizePath(script_path, mustWork = TRUE)))
 app <- new.env(parent = globalenv())
 sys.source(file.path(project_dir, "app.R"), envir = app)
 
+expect_true <- function(value, label) {
+  if (!isTRUE(value)) stop(label, call. = FALSE)
+}
+
+run_server_tests <- function() {
 fixture_dir <- tempfile("tiny-plot-digitizer-test-", tmpdir = project_dir)
 dir.create(fixture_dir)
+on.exit({
+  unlink(fixture_dir, recursive = TRUE)
+  Sys.unsetenv(c(
+    "DIGITIZER_FOLDER", "DIGITIZER_DIRTY_STATE_FILE", "DIGITIZER_DRAFT_FILE"
+  ))
+}, add = TRUE)
 
 calibration <- app$new_project_calibration(10, 10)
 series <- app$default_groups()
@@ -30,7 +41,11 @@ for (index in seq_len(2)) {
   project_paths[index] <- normalizePath(project_paths[index], mustWork = TRUE)
 }
 
-Sys.setenv(DIGITIZER_FOLDER = fixture_dir)
+draft_path <- file.path(fixture_dir, "recovery-draft.rds")
+Sys.setenv(
+  DIGITIZER_FOLDER = fixture_dir,
+  DIGITIZER_DRAFT_FILE = draft_path
+)
 
 shiny::testServer(app$server, {
   session$flushReact()
@@ -96,6 +111,123 @@ shiny::testServer(app$server, {
   stopifnot(identical(saved$pixel_x, 8L))
 })
 
+project1_snapshot <- app$read_file_bytes(project_paths[1])
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
+  external_snapshot <- c(project1_snapshot, charToRaw("\n# external change\n"))
+  app$atomic_write_bytes(external_snapshot, project_paths[1])
+  rv$data$pixel_x[1] <- 9
+  rv$point_dirty <- TRUE
+
+  saved <- save_changes()
+  stopifnot(
+    is.null(saved),
+    isTRUE(rv$point_dirty),
+    grepl("앱 밖에서 변경", rv$status, fixed = TRUE),
+    identical(app$read_file_bytes(project_paths[1]), external_snapshot)
+  )
+})
+app$atomic_write_bytes(project1_snapshot, project_paths[1])
+
+project2_snapshot <- app$read_file_bytes(project_paths[2])
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+  app$atomic_write_lines("broken", project_paths[2])
+
+  loaded <- perform_navigation(list(
+    kind = "dataset", target = project_paths[2], label = basename(project_paths[2])
+  ))
+  stopifnot(
+    identical(loaded, FALSE),
+    identical(rv$dataset$key, project_paths[1]),
+    grepl("파일을 불러오지 못했습니다", rv$status, fixed = TRUE)
+  )
+
+  app$atomic_write_bytes(project2_snapshot, project_paths[2])
+  loaded <- perform_navigation(list(
+    kind = "dataset", target = project_paths[2], label = basename(project_paths[2])
+  ))
+  stopifnot(
+    identical(loaded, TRUE),
+    identical(rv$dataset$key, project_paths[2])
+  )
+})
+
+unlink(draft_path)
+shiny::testServer(app$server, {
+  session$flushReact()
+  session$setInputs(dataset = project_paths[1])
+  session$flushReact()
+
+  start_x <- rv$data$pixel_x[1]
+  start_y <- rv$data$pixel_y[1]
+  expect_true(set_selected_point_position(start_x + 1, start_y), "첫 포인트 이동")
+  expect_true(set_selected_point_position(start_x + 2, start_y), "둘째 포인트 이동")
+  expect_true(length(rv$point_history) == 2L, "포인트 이력 2단계")
+  expect_true(undo_target(), "첫 포인트 Undo")
+  expect_true(identical(rv$data$pixel_x[1], start_x + 1), "첫 포인트 Undo 좌표")
+  session$flushReact()
+  expect_true(undo_target(), "둘째 포인트 Undo")
+  expect_true(identical(rv$data$pixel_x[1], start_x), "둘째 포인트 Undo 좌표")
+  session$flushReact()
+  expect_true(redo_target(), "첫 포인트 Redo")
+  expect_true(identical(rv$data$pixel_x[1], start_x + 1), "첫 포인트 Redo 좌표")
+  session$flushReact()
+  expect_true(redo_target(), "둘째 포인트 Redo")
+  expect_true(identical(rv$data$pixel_x[1], start_x + 2), "둘째 포인트 Redo 좌표")
+  session$flushReact()
+
+  session$setInputs(zoom_click = list(x = 7.4, y = 3.6))
+  session$flushReact()
+  expect_true(identical(rv$data$pixel_x[1], 7.5), "확대 화면 X좌표")
+  expect_true(identical(rv$data$pixel_y[1], 3.5), "확대 화면 Y좌표")
+
+  original_name <- rv$series$name[1]
+  remember_point_change()
+  rv$series$name[1] <- "renamed"
+  mark_mode_changed("point")
+  expect_true(undo_target(), "그룹 Undo")
+  expect_true(identical(rv$series$name[1], original_name), "그룹 Undo 상태")
+  session$flushReact()
+  expect_true(redo_target(), "그룹 Redo")
+  expect_true(identical(rv$series$name[1], "renamed"), "그룹 Redo 상태")
+  session$flushReact()
+
+  rv$active_edit_mode <- "calibration"
+  rv$calibration_target <- "box"
+  rv$calibration_point <- "origin"
+  origin <- rv$calibration$box$origin
+  expect_true(set_calibration_box_point("origin", 1, origin$pixel_y), "첫 좌표설정 이동")
+  expect_true(set_calibration_box_point("origin", 2, origin$pixel_y), "둘째 좌표설정 이동")
+  expect_true(undo_target(), "첫 좌표설정 Undo")
+  expect_true(identical(rv$calibration$box$origin$pixel_x, 1), "첫 좌표설정 Undo 좌표")
+  session$flushReact()
+  expect_true(undo_target(), "둘째 좌표설정 Undo")
+  expect_true(
+    identical(rv$calibration$box$origin$pixel_x, origin$pixel_x),
+    "둘째 좌표설정 Undo 좌표"
+  )
+  session$flushReact()
+  expect_true(redo_target(), "좌표설정 Redo")
+  expect_true(identical(rv$calibration$box$origin$pixel_x, 1), "좌표설정 Redo 좌표")
+  session$flushReact()
+
+  save_recovery_draft()
+  expect_true(file.exists(draft_path), "복구 draft 저장")
+  draft <- app$read_recovery_draft(draft_path)
+  rv$data$pixel_x[1] <- 0
+  expect_true(restore_recovery_draft(draft), "복구 draft 적용")
+  expect_true(identical(rv$data$pixel_x[1], draft$data$pixel_x[1]), "복구 draft 좌표")
+  capture_all_baselines()
+  save_recovery_draft()
+  expect_true(!file.exists(draft_path), "정상 상태의 복구 draft 제거")
+})
+
 dirty_state_path <- file.path(fixture_dir, "dirty-state")
 Sys.setenv(DIGITIZER_DIRTY_STATE_FILE = dirty_state_path)
 shiny::testServer(app$server, {
@@ -109,6 +241,7 @@ shiny::testServer(app$server, {
   stopifnot(identical(readLines(dirty_state_path), "clean"))
 })
 
-unlink(fixture_dir, recursive = TRUE)
-Sys.unsetenv(c("DIGITIZER_FOLDER", "DIGITIZER_DIRTY_STATE_FILE"))
+}
+
+run_server_tests()
 cat("Tiny Plot Digitizer 서버 전환 테스트 통과\n")

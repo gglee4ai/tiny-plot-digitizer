@@ -948,6 +948,11 @@ read_file_bytes <- function(path) {
   readBin(path, what = "raw", n = size)
 }
 
+file_matches_snapshot <- function(path, snapshot) {
+  !is.null(snapshot) && file.exists(path) &&
+    identical(read_file_bytes(path), snapshot)
+}
+
 atomic_write_bytes <- function(bytes, path) {
   atomic_replace(path, function(temp_path) {
     connection <- file(temp_path, open = "wb")
@@ -956,6 +961,62 @@ atomic_write_bytes <- function(bytes, path) {
       finally = close(connection)
     )
   })
+}
+
+recovery_draft_version <- 1L
+
+validate_recovery_draft <- function(draft) {
+  required <- c(
+    "version", "saved_at", "dataset", "image_width", "image_height",
+    "data", "series", "calibration", "point_baseline_data",
+    "series_baseline", "calibration_baseline", "point_dirty",
+    "calibration_dirty", "selected_point_id", "active_edit_mode",
+    "calibration_target", "calibration_point", "save_name_mode",
+    "save_name_suffix", "save_name_custom", "initial_file_snapshot",
+    "latest_saved_snapshot", "disk_file_snapshot"
+  )
+  if (!is.list(draft) || !all(required %in% names(draft)) ||
+      !identical(draft$version, recovery_draft_version)) {
+    stop("복구 draft 형식을 확인할 수 없습니다")
+  }
+  if (!is.list(draft$dataset) ||
+      !all(c("key", "source_path", "load_path", "label") %in% names(draft$dataset)) ||
+      length(draft$dataset$source_path) != 1L ||
+      !nzchar(as.character(draft$dataset$source_path))) {
+    stop("복구 draft의 작업 파일 정보를 확인할 수 없습니다")
+  }
+  if (!is.data.frame(draft$data) ||
+      !all(c("point_id", "series_id", "pixel_x", "pixel_y") %in% names(draft$data)) ||
+      !is.data.frame(draft$series) ||
+      !all(c("id", "name", "marker", "color", "size", "alpha") %in% names(draft$series)) ||
+      is.null(draft$calibration) ||
+      !valid_projective_calibration(draft$calibration)) {
+    stop("복구 draft의 포인트 또는 좌표 설정을 확인할 수 없습니다")
+  }
+  if (!isTRUE(draft$point_dirty) && !isTRUE(draft$calibration_dirty)) {
+    stop("복구 draft에 저장되지 않은 변경사항이 없습니다")
+  }
+  if (!draft$active_edit_mode %in% c("point", "calibration")) {
+    stop("복구 draft의 편집 모드를 확인할 수 없습니다")
+  }
+  draft
+}
+
+read_recovery_draft <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  validate_recovery_draft(readRDS(path))
+}
+
+atomic_write_recovery_draft <- function(draft, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  atomic_replace(path, function(temp_path) {
+    saveRDS(validate_recovery_draft(draft), temp_path, version = 3)
+  })
+}
+
+append_history <- function(history, snapshot, limit = 50L) {
+  history <- c(history, list(snapshot))
+  if (length(history) > limit) tail(history, limit) else history
 }
 
 app_dirty_sessions <- new.env(parent = emptyenv())
@@ -995,8 +1056,8 @@ ui <- fluidPage(
       #folder-modal .sF-breadcrumps { display: none; }
       #folder-modal .folder-picker-breadcrumb { display: flex; align-items: center; gap: 5px; margin: 7px 0 2px; padding: 5px 8px; min-height: 30px; overflow-x: auto; white-space: nowrap; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 12px; }
       #folder-modal .folder-picker-separator { color: #777; }
-      .move-button-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 6px 0 9px; }
-      .calibration-move-button-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+      .move-button-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 6px 0 9px; }
+      .calibration-move-button-row { grid-template-columns: repeat(6, minmax(0, 1fr)); }
       .move-button-row .btn { width: 100%; height: 34px; padding: 3px; font-size: 18px; border-radius: 4px; }
       .status-line { min-height: 22px; margin-top: 8px; font-size: 12px; }
       .status-line, .status-line .shiny-text-output { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: normal; word-break: break-all; }
@@ -1206,6 +1267,16 @@ ui <- fluidPage(
         var editingField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' ||
           (activeElement && activeElement.isContentEditable);
         if (editingField) return;
+        var accelerator = event.metaKey || event.ctrlKey;
+        var shortcutKey = event.key.toLowerCase();
+        if (accelerator && (shortcutKey === 'z' || shortcutKey === 'y')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          var redoRequested = shortcutKey === 'y' || (shortcutKey === 'z' && event.shiftKey);
+          var historyButton = document.getElementById(redoRequested ? 'redo' : 'undo');
+          if (historyButton) historyButton.click();
+          return;
+        }
         var directions = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'};
         if (directions[event.key]) {
           event.preventDefault();
@@ -1571,7 +1642,8 @@ ui <- fluidPage(
           actionButton("down", "↓", title = "아래로 이동"),
           actionButton("up", "↑", title = "위로 이동"),
           actionButton("right", "→", title = "오른쪽으로 이동"),
-          actionButton("undo", "↺", title = "선택한 대상의 직전 변경만 되돌리기")
+          actionButton("undo", "↺", title = "이전 변경 되돌리기 (⌘Z / Ctrl+Z)"),
+          actionButton("redo", "↻", title = "되돌린 변경 다시 실행 (⇧⌘Z / Ctrl+Y)")
         ),
         div(
           class = "move-point-option move-step-option",
@@ -1612,7 +1684,7 @@ ui <- fluidPage(
       width = 3,
       class = "editor-column detail-column",
       div(class = "plot-title", textOutput("detail_title")),
-      plotOutput("zoom_plot", height = "430px")
+      plotOutput("zoom_plot", height = "430px", click = "zoom_click")
     )
   )
 )
@@ -1632,6 +1704,25 @@ default_working_folder <- function(
 
 server <- function(input, output, session) {
   home_dir <- normalizePath("~", mustWork = TRUE)
+  configured_draft <- trimws(Sys.getenv("DIGITIZER_DRAFT_FILE", ""))
+  runtime_app_dir <- normalizePath(
+    getOption("digitization.point.editor.app_dir", getwd()),
+    mustWork = FALSE
+  )
+  bundled_app <- grepl("[.]app/Contents/Resources/app$", runtime_app_dir)
+  recovery_dir <- if (identical(Sys.info()[["sysname"]], "Darwin")) {
+    file.path(home_dir, "Library", "Application Support", "Tiny Plot Digitizer")
+  } else {
+    file.path(home_dir, ".tiny-plot-digitizer")
+  }
+  recovery_draft_file <- if (nzchar(configured_draft)) {
+    path.expand(configured_draft)
+  } else {
+    file.path(
+      recovery_dir,
+      if (bundled_app) "recovery-draft.rds" else "development-recovery-draft.rds"
+    )
+  }
   configured_folder <- trimws(Sys.getenv("DIGITIZER_FOLDER", ""))
   initial_folder <- if (nzchar(configured_folder) && dir.exists(path.expand(configured_folder))) {
     normalizePath(path.expand(configured_folder), mustWork = TRUE)
@@ -1656,8 +1747,7 @@ server <- function(input, output, session) {
     point_baseline_data = NULL,
     calibration_baseline = NULL, series = NULL, series_baseline = NULL,
     pending_series_edit = NULL,
-    point_dirty = FALSE, calibration_dirty = FALSE, point_undo = NULL,
-    calibration_undo = NULL,
+    point_dirty = FALSE, calibration_dirty = FALSE,
     add_mode = FALSE, add_series = NULL,
     selected = NULL, status = "", pending_navigation = NULL,
     updating_calibration_inputs = FALSE,
@@ -1668,8 +1758,25 @@ server <- function(input, output, session) {
     save_name_suffix = "-digitized",
     save_name_custom = "",
     initial_file_snapshot = NULL,
-    latest_saved_snapshot = NULL
+    latest_saved_snapshot = NULL,
+    disk_file_snapshot = NULL,
+    point_history = list(), point_redo = list(),
+    calibration_history = list(), calibration_redo = list()
   )
+
+  recovery_draft_error <- NULL
+  pending_recovery <- reactiveVal(tryCatch(
+    read_recovery_draft(recovery_draft_file),
+    error = function(error) {
+      recovery_draft_error <<- conditionMessage(error)
+      NULL
+    }
+  ))
+
+  remove_recovery_draft <- function() {
+    if (file.exists(recovery_draft_file)) unlink(recovery_draft_file)
+    invisible()
+  }
 
   load_source_image <- function(path) {
     normalized <- normalizePath(path, mustWork = TRUE)
@@ -1756,11 +1863,13 @@ server <- function(input, output, session) {
       rv$point_baseline_data <- rv$data
       rv$series_baseline <- rv$series
       rv$point_dirty <- FALSE
-      rv$point_undo <- NULL
+      rv$point_history <- list()
+      rv$point_redo <- list()
     } else if (identical(mode, "calibration")) {
       rv$calibration_baseline <- rv$calibration
       rv$calibration_dirty <- FALSE
-      rv$calibration_undo <- NULL
+      rv$calibration_history <- list()
+      rv$calibration_redo <- list()
     } else {
       stop("알 수 없는 편집 모드입니다: ", mode)
     }
@@ -1864,6 +1973,24 @@ server <- function(input, output, session) {
       rv$status <- paste0("같은 이름의 CSV가 이미 있습니다: ", basename(save_path))
       return(NULL)
     }
+    if (same_target) {
+      matches_snapshot <- tryCatch(
+        file_matches_snapshot(save_path, rv$disk_file_snapshot),
+        error = function(error) {
+          rv$status <- paste0("저장 전 파일 확인 실패: ", conditionMessage(error))
+          NA
+        }
+      )
+      if (is.na(matches_snapshot)) return(NULL)
+      if (!matches_snapshot) {
+        rv$status <- paste0(
+          "저장하지 못했습니다: ", basename(save_path),
+          " 파일이 앱 밖에서 변경되었거나 삭제되었습니다. ",
+          "다시 불러오거나 다른이름으로 저장하세요."
+        )
+        return(NULL)
+      }
+    }
     finalize_point_order()
     project_lines <- serialize_project_csv(
       rv$dataset$source_path, rv$image_width, rv$image_height,
@@ -1881,7 +2008,9 @@ server <- function(input, output, session) {
     )
     if (!saved) return(NULL)
     saved_path <- normalizePath(save_path, mustWork = TRUE)
-    rv$latest_saved_snapshot <- read_file_bytes(saved_path)
+    saved_snapshot <- read_file_bytes(saved_path)
+    rv$latest_saved_snapshot <- saved_snapshot
+    rv$disk_file_snapshot <- saved_snapshot
     previous_key <- rv$dataset$key
     rv$dataset$key <- saved_path
     rv$dataset$load_path <- saved_path
@@ -1894,6 +2023,7 @@ server <- function(input, output, session) {
     catalog(current_catalog)
     update_project_input(current_catalog, selected = saved_path, freeze = TRUE)
     capture_all_baselines()
+    remove_recovery_draft()
     message <- paste("저장됨:", display_path(save_path))
     rv$status <- message
     message
@@ -1914,13 +2044,16 @@ server <- function(input, output, session) {
     rv$pending_edit_mode <- NULL
     rv$point_dirty <- FALSE
     rv$calibration_dirty <- FALSE
-    rv$point_undo <- NULL
-    rv$calibration_undo <- NULL
+    rv$point_history <- list()
+    rv$point_redo <- list()
+    rv$calibration_history <- list()
+    rv$calibration_redo <- list()
     rv$add_mode <- FALSE
     rv$add_series <- NULL
     rv$selected <- NULL
     rv$initial_file_snapshot <- NULL
     rv$latest_saved_snapshot <- NULL
+    rv$disk_file_snapshot <- NULL
     rv$status <- ""
     updateSelectInput(session, "setting_series", choices = character(), selected = character())
     session$sendCustomMessage(
@@ -1960,6 +2093,28 @@ server <- function(input, output, session) {
     )
   }
 
+  restore_project_selection <- function(projects) {
+    selected <- if (
+      !is.null(rv$dataset) && rv$dataset$key %in% names(projects)
+    ) rv$dataset$key else NULL
+    update_project_input(projects, selected = selected, freeze = TRUE)
+    invisible()
+  }
+
+  load_dataset_safely <- function(key) {
+    tryCatch(
+      {
+        load_dataset(key)
+        TRUE
+      },
+      error = function(error) {
+        rv$status <- paste0("파일을 불러오지 못했습니다: ", conditionMessage(error))
+        showNotification(rv$status, type = "error")
+        FALSE
+      }
+    )
+  }
+
   perform_navigation <- function(navigation) {
     kind <- navigation$kind
     target <- navigation$target
@@ -1987,15 +2142,20 @@ server <- function(input, output, session) {
         load_path = NULL,
         label = paste0("[신규] ", basename(target))
       )
-      projects <- catalog()
+      previous_projects <- catalog()
+      projects <- previous_projects
       if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
           rv$dataset$key %in% names(projects)) {
         projects[[rv$dataset$key]] <- NULL
       }
       projects[[key]] <- dataset
       catalog(projects)
+      if (!load_dataset_safely(key)) {
+        catalog(previous_projects)
+        restore_project_selection(previous_projects)
+        return(invisible(FALSE))
+      }
       update_project_input(projects, selected = key, freeze = TRUE)
-      load_dataset(key)
       return(invisible(TRUE))
     }
 
@@ -2008,14 +2168,18 @@ server <- function(input, output, session) {
         }
         return(invisible(FALSE))
       }
-      if (!is.null(rv$dataset) && is.null(rv$dataset$load_path) &&
-          !identical(rv$dataset$key, target) &&
-          rv$dataset$key %in% names(projects)) {
-        projects[[rv$dataset$key]] <- NULL
+      previous_key <- if (is.null(rv$dataset)) NULL else rv$dataset$key
+      previous_was_new <- !is.null(rv$dataset) && is.null(rv$dataset$load_path)
+      if (!load_dataset_safely(target)) {
+        restore_project_selection(projects)
+        return(invisible(FALSE))
+      }
+      if (previous_was_new && !identical(previous_key, target) &&
+          previous_key %in% names(projects)) {
+        projects[[previous_key]] <- NULL
         catalog(projects)
       }
       update_project_input(projects, selected = target, freeze = TRUE)
-      load_dataset(target)
       return(invisible(TRUE))
     }
 
@@ -2062,6 +2226,15 @@ server <- function(input, output, session) {
   observeEvent(TRUE, {
     update_catalog(initial_folder)
     update_folder_picker_target(initial_folder)
+    if (!is.null(recovery_draft_error)) {
+      remove_recovery_draft()
+      showNotification(
+        paste0("복구 draft를 읽지 못해 폐기했습니다: ", recovery_draft_error),
+        type = "warning"
+      )
+    } else if (!is.null(pending_recovery())) {
+      show_recovery_modal(pending_recovery())
+    }
   }, once = TRUE)
 
   observeEvent(input$folder, {
@@ -2278,12 +2451,51 @@ server <- function(input, output, session) {
     session$sendCustomMessage("set-add-mode-state", list(active = isTRUE(active)))
   }
 
-  remember_point_change <- function(row) {
-    rv$point_undo <- list(
+  point_state_snapshot <- function() {
+    selected_series_id <- if (length(input$setting_series)) {
+      suppressWarnings(as.integer(input$setting_series))
+    } else {
+      NULL
+    }
+    list(
       data = rv$data,
-      point_id = rv$data$point_id[row],
-      point_dirty = rv$point_dirty
+      series = rv$series,
+      selected_point_id = selected_point_id(),
+      selected_series_id = selected_series_id,
+      point_dirty = isTRUE(rv$point_dirty)
     )
+  }
+
+  remember_point_change <- function() {
+    rv$point_history <- append_history(rv$point_history, point_state_snapshot())
+    rv$point_redo <- list()
+    invisible()
+  }
+
+  restore_point_state <- function(snapshot) {
+    rv$data <- snapshot$data
+    rv$series <- snapshot$series
+    rv$point_dirty <- isTRUE(snapshot$point_dirty)
+    rv$selected <- if (!is.null(snapshot$selected_point_id) && nrow(rv$data)) {
+      match(as.integer(snapshot$selected_point_id), rv$data$point_id)
+    } else {
+      NULL
+    }
+    if (length(rv$selected) && is.na(rv$selected)) rv$selected <- NULL
+    set_add_mode(FALSE)
+    refresh_controls(rv$selected)
+    selected_series <- snapshot$selected_series_id
+    if (is.null(selected_series) || is.na(series_row(selected_series))) {
+      selected_series <- if (!is.null(rv$selected) && nrow(rv$data)) {
+        rv$data$series_id[rv$selected]
+      } else {
+        NULL
+      }
+    }
+    refresh_series_choices(
+      if (is.null(selected_series)) NULL else as.character(selected_series)
+    )
+    invisible()
   }
 
   calibration_target_key <- function() {
@@ -2291,12 +2503,37 @@ server <- function(input, output, session) {
     paste(rv$calibration_target, rv$calibration_point, sep = ":")
   }
 
-  remember_calibration_change <- function() {
-    rv$calibration_undo <- list(
+  calibration_state_snapshot <- function() {
+    list(
       target = calibration_target_key(),
       calibration = rv$calibration,
-      calibration_dirty = rv$calibration_dirty
+      calibration_dirty = isTRUE(rv$calibration_dirty)
     )
+  }
+
+  remember_calibration_change <- function() {
+    rv$calibration_history <- append_history(
+      rv$calibration_history, calibration_state_snapshot()
+    )
+    rv$calibration_redo <- list()
+    invisible()
+  }
+
+  restore_calibration_state <- function(snapshot) {
+    rv$calibration <- snapshot$calibration
+    rv$calibration_dirty <- isTRUE(snapshot$calibration_dirty)
+    target <- if (is.null(snapshot$target)) "" else snapshot$target
+    selection <- strsplit(target, ":", fixed = TRUE)[[1]]
+    if (length(selection) == 2L) {
+      rv$calibration_target <- selection[1]
+      rv$calibration_point <- selection[2]
+    } else {
+      rv$calibration_target <- NULL
+      rv$calibration_point <- NULL
+    }
+    update_calibration_inputs()
+    update_point_choices()
+    invisible()
   }
 
   selected_point_id <- function() {
@@ -2304,6 +2541,181 @@ server <- function(input, output, session) {
         rv$selected < 1L || rv$selected > nrow(rv$data)) return(NULL)
     as.integer(rv$data$point_id[rv$selected])
   }
+
+  current_recovery_draft <- function() {
+    if (is.null(rv$dataset) || !unsaved_changes_pending()) return(NULL)
+    list(
+      version = recovery_draft_version,
+      saved_at = as.numeric(Sys.time()),
+      dataset = rv$dataset,
+      image_width = rv$image_width,
+      image_height = rv$image_height,
+      data = rv$data,
+      series = rv$series,
+      calibration = rv$calibration,
+      point_baseline_data = rv$point_baseline_data,
+      series_baseline = rv$series_baseline,
+      calibration_baseline = rv$calibration_baseline,
+      point_dirty = isTRUE(rv$point_dirty),
+      calibration_dirty = isTRUE(rv$calibration_dirty),
+      selected_point_id = selected_point_id(),
+      active_edit_mode = rv$active_edit_mode,
+      calibration_target = rv$calibration_target,
+      calibration_point = rv$calibration_point,
+      save_name_mode = rv$save_name_mode,
+      save_name_suffix = rv$save_name_suffix,
+      save_name_custom = rv$save_name_custom,
+      initial_file_snapshot = rv$initial_file_snapshot,
+      latest_saved_snapshot = rv$latest_saved_snapshot,
+      disk_file_snapshot = rv$disk_file_snapshot
+    )
+  }
+
+  save_recovery_draft <- function() {
+    draft <- current_recovery_draft()
+    if (is.null(draft)) {
+      remove_recovery_draft()
+    } else {
+      atomic_write_recovery_draft(draft, recovery_draft_file)
+    }
+    invisible(draft)
+  }
+
+  restore_recovery_draft <- function(draft) {
+    draft <- validate_recovery_draft(draft)
+    source_path <- normalizePath(draft$dataset$source_path, mustWork = TRUE)
+    source_image <- load_source_image(source_path)
+    if (source_image$width != draft$image_width ||
+        source_image$height != draft$image_height) {
+      stop("복구 draft와 원본 이미지의 크기가 다릅니다")
+    }
+
+    folder_path <- dirname(source_path)
+    folder_picker_target(folder_path)
+    dataset <- draft$dataset
+    dataset$source_path <- source_path
+    if (!is.null(dataset$load_path)) {
+      dataset$load_path <- normalizePath(dataset$load_path, mustWork = FALSE)
+      dataset$key <- dataset$load_path
+      dataset$label <- basename(dataset$load_path)
+    } else {
+      dataset$key <- paste0("new::", source_path)
+      dataset$label <- paste0("[복구] ", basename(source_path))
+    }
+
+    projects <- discover_projects(folder_path)
+    projects[[dataset$key]] <- dataset
+    selected_folder(folder_path)
+    catalog(projects)
+    update_folder_picker_target(folder_path)
+    update_project_input(projects, selected = dataset$key, freeze = TRUE)
+
+    rv$data <- draft$data
+    rv$image_width <- source_image$width
+    rv$image_height <- source_image$height
+    rv$raster_matrix <- source_image$raster_matrix
+    rv$dataset <- dataset
+    rv$calibration <- draft$calibration
+    rv$series <- draft$series
+    rv$point_baseline_data <- draft$point_baseline_data
+    rv$series_baseline <- draft$series_baseline
+    rv$calibration_baseline <- draft$calibration_baseline
+    rv$point_dirty <- isTRUE(draft$point_dirty)
+    rv$calibration_dirty <- isTRUE(draft$calibration_dirty)
+    rv$point_history <- list()
+    rv$point_redo <- list()
+    rv$calibration_history <- list()
+    rv$calibration_redo <- list()
+    rv$pending_series_edit <- NULL
+    rv$pending_navigation <- NULL
+    rv$calibration_target <- draft$calibration_target
+    rv$calibration_point <- draft$calibration_point
+    rv$active_edit_mode <- draft$active_edit_mode
+    rv$pending_edit_mode <- NULL
+    rv$save_name_mode <- draft$save_name_mode
+    rv$save_name_suffix <- draft$save_name_suffix
+    rv$save_name_custom <- draft$save_name_custom
+    rv$initial_file_snapshot <- draft$initial_file_snapshot
+    rv$latest_saved_snapshot <- draft$latest_saved_snapshot
+    rv$disk_file_snapshot <- draft$disk_file_snapshot
+
+    selected_id <- suppressWarnings(as.integer(draft$selected_point_id))
+    rv$selected <- if (length(selected_id) && nrow(rv$data)) {
+      match(selected_id, rv$data$point_id)
+    } else {
+      NULL
+    }
+    if (length(rv$selected) && is.na(rv$selected)) rv$selected <- NULL
+    set_add_mode(FALSE)
+    refresh_controls(rv$selected)
+    update_calibration_inputs()
+    update_edit_mode_input(rv$active_edit_mode)
+    rv$status <- "비정상 종료 전에 저장된 작업을 복구했습니다"
+    invisible(TRUE)
+  }
+
+  show_recovery_modal <- function(draft) {
+    saved_time <- format(
+      as.POSIXct(draft$saved_at, origin = "1970-01-01"),
+      "%Y-%m-%d %H:%M:%S"
+    )
+    showModal(modalDialog(
+      title = "복구 가능한 작업",
+      paste0(
+        "'", basename(draft$dataset$source_path), "' 작업이 ", saved_time,
+        "에 임시 저장되었습니다. 복구하시겠습니까?"
+      ),
+      footer = tagList(
+        actionButton("discard_recovery", "폐기", class = "btn-warning"),
+        actionButton("restore_recovery", "복구", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  }
+
+  observeEvent(input$discard_recovery, {
+    removeModal()
+    pending_recovery(NULL)
+    remove_recovery_draft()
+    rv$status <- "임시 저장된 복구 작업을 폐기했습니다"
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$restore_recovery, {
+    draft <- pending_recovery()
+    req(draft)
+    removeModal()
+    restored <- tryCatch(
+      restore_recovery_draft(draft),
+      error = function(error) {
+        showNotification(
+          paste0("작업 복구 실패: ", conditionMessage(error)), type = "error"
+        )
+        FALSE
+      }
+    )
+    if (restored) {
+      pending_recovery(NULL)
+      save_recovery_draft()
+    } else {
+      show_recovery_modal(draft)
+    }
+  }, ignoreInit = TRUE)
+
+  recovery_state <- debounce(reactive(current_recovery_draft()), 500)
+  observe({
+    draft <- recovery_state()
+    if (!is.null(pending_recovery())) return()
+    tryCatch(
+      {
+        if (is.null(draft)) remove_recovery_draft() else {
+          atomic_write_recovery_draft(draft, recovery_draft_file)
+        }
+      },
+      error = function(error) {
+        rv$status <- paste0("복구 draft 저장 실패: ", conditionMessage(error))
+      }
+    )
+  })
 
   sort_points <- function(selected_point_id = NULL) {
     if (!nrow(rv$data)) {
@@ -2438,6 +2850,8 @@ server <- function(input, output, session) {
       loaded_project <- TRUE
     }
 
+    disk_snapshot <- if (loaded_project) read_file_bytes(project_path) else NULL
+
     rv$data <- data
     rv$image_width <- image_width
     rv$image_height <- image_height
@@ -2452,10 +2866,10 @@ server <- function(input, output, session) {
     rv$calibration_point <- NULL
     set_add_mode(FALSE)
     update_save_name_inputs(dataset)
+    rv$disk_file_snapshot <- disk_snapshot
     if (reset_file_snapshots) {
-      snapshot <- if (loaded_project) read_file_bytes(project_path) else NULL
-      rv$initial_file_snapshot <- snapshot
-      rv$latest_saved_snapshot <- snapshot
+      rv$initial_file_snapshot <- disk_snapshot
+      rv$latest_saved_snapshot <- disk_snapshot
     }
     rv$status <- if (loaded_project) {
       paste("CSV 불러옴:", basename(project_path))
@@ -2686,6 +3100,7 @@ server <- function(input, output, session) {
       return()
     }
     if (identical(pending$action, "add")) {
+      remember_point_change()
       rv$series <- rbind(
         rv$series,
         data.frame(
@@ -2706,6 +3121,7 @@ server <- function(input, output, session) {
       !isTRUE(all.equal(series$size[row], size)) ||
       !isTRUE(all.equal(series$alpha[row], alpha))
     if (changed) {
+      remember_point_change()
       series$name[row] <- name
       series$marker[row] <- marker
       series$color[row] <- color
@@ -2742,6 +3158,7 @@ server <- function(input, output, session) {
     if (rv$add_mode && identical(as.integer(rv$add_series), id)) {
       set_add_mode(FALSE)
     }
+    remember_point_change()
     rv$series <- rv$series[-row, , drop = FALSE]
     selected_id <- if (nrow(rv$series)) {
       as.character(rv$series$id[min(row, nrow(rv$series))])
@@ -3018,7 +3435,6 @@ server <- function(input, output, session) {
 
   move_selected <- function(direction) {
     row <- selected_row()
-    remember_point_change(row)
     data <- rv$data
     width <- rv$image_width
     height <- rv$image_height
@@ -3029,12 +3445,35 @@ server <- function(input, output, session) {
     if (direction == "up") data$pixel_y[row] <- max(0, data$pixel_y[row] - step)
     if (direction == "down") data$pixel_y[row] <- min(height, data$pixel_y[row] + step)
 
+    if (identical(data$pixel_x[row], rv$data$pixel_x[row]) &&
+        identical(data$pixel_y[row], rv$data$pixel_y[row])) return(invisible(FALSE))
+    remember_point_change()
     rv$data <- data
     mark_mode_changed("point")
     update_point_label(row)
+    invisible(TRUE)
+  }
+
+  set_selected_point_position <- function(
+    pixel_x, pixel_y, status = "포인트 위치가 변경되었습니다"
+  ) {
+    row <- selected_row()
+    pixel_x <- round_pixel_coordinate(max(0, min(rv$image_width, pixel_x)))
+    pixel_y <- round_pixel_coordinate(max(0, min(rv$image_height, pixel_y)))
+    if (identical(pixel_x, rv$data$pixel_x[row]) &&
+        identical(pixel_y, rv$data$pixel_y[row])) return(invisible(FALSE))
+    remember_point_change()
+    rv$data$pixel_x[row] <- pixel_x
+    rv$data$pixel_y[row] <- pixel_y
+    mark_mode_changed("point", status)
+    update_point_label(row)
+    invisible(TRUE)
   }
 
   apply_calibration_change <- function(calibration, status) {
+    if (isTRUE(all.equal(calibration, rv$calibration, check.attributes = FALSE))) {
+      return(FALSE)
+    }
     remember_calibration_change()
     rv$calibration <- calibration
     mark_mode_changed("calibration", status)
@@ -3168,6 +3607,22 @@ server <- function(input, output, session) {
     }
   }
 
+  set_selected_calibration_position <- function(pixel_x, pixel_y) {
+    req(rv$calibration$type == "projective")
+    pixel_x <- round_pixel_coordinate(max(0, min(rv$image_width, pixel_x)))
+    pixel_y <- round_pixel_coordinate(max(0, min(rv$image_height, pixel_y)))
+    if (identical(rv$calibration_target, "axis")) {
+      req(rv$calibration_point)
+      fraction <- project_to_axis_edge(
+        pixel_x, pixel_y,
+        axis_edge(rv$calibration, rv$calibration_point)
+      )
+      return(set_calibration_axis_fraction(rv$calibration_point, fraction))
+    }
+    req(identical(rv$calibration_target, "box"), rv$calibration_point)
+    set_calibration_box_point(rv$calibration_point, pixel_x, pixel_y)
+  }
+
   observeEvent(input$left, move_target("left"))
   observeEvent(input$right, move_target("right"))
   observeEvent(input$up, move_target("up"))
@@ -3175,36 +3630,70 @@ server <- function(input, output, session) {
 
   undo_target <- function() {
     if (active_mode_is("calibration")) {
-      snapshot <- rv$calibration_undo
-      if (is.null(snapshot) || !identical(snapshot$target, calibration_target_key())) {
-        rv$status <- "선택한 설정점에 되돌릴 변경이 없습니다"
-        return()
+      if (!length(rv$calibration_history)) {
+        rv$status <- "되돌릴 좌표설정 변경이 없습니다"
+        return(invisible(FALSE))
       }
-      rv$calibration <- snapshot$calibration
-      rv$calibration_dirty <- snapshot$calibration_dirty
-      rv$calibration_undo <- NULL
-      rv$status <- unsaved_status()
-      update_calibration_inputs()
-      update_point_choices()
-      return()
+      index <- length(rv$calibration_history)
+      snapshot <- rv$calibration_history[[index]]
+      rv$calibration_history <- if (index == 1L) {
+        list()
+      } else {
+        rv$calibration_history[-index]
+      }
+      rv$calibration_redo <- append_history(
+        rv$calibration_redo, calibration_state_snapshot()
+      )
+      restore_calibration_state(snapshot)
+      rv$status <- "좌표설정 변경을 되돌렸습니다"
+      return(invisible(TRUE))
     }
 
-    row <- selected_row()
-    snapshot <- rv$point_undo
-    if (is.null(snapshot) || snapshot$point_id != rv$data$point_id[row]) {
-      rv$status <- "선택한 포인트에 되돌릴 직전 변경이 없습니다"
-      return()
+    if (!length(rv$point_history)) {
+      rv$status <- "되돌릴 포인트 또는 그룹 변경이 없습니다"
+      return(invisible(FALSE))
+    }
+    index <- length(rv$point_history)
+    snapshot <- rv$point_history[[index]]
+    rv$point_history <- if (index == 1L) list() else rv$point_history[-index]
+    rv$point_redo <- append_history(rv$point_redo, point_state_snapshot())
+    restore_point_state(snapshot)
+    rv$status <- "포인트 또는 그룹 변경을 되돌렸습니다"
+    invisible(TRUE)
+  }
+
+  redo_target <- function() {
+    if (active_mode_is("calibration")) {
+      if (!length(rv$calibration_redo)) {
+        rv$status <- "다시 실행할 좌표설정 변경이 없습니다"
+        return(invisible(FALSE))
+      }
+      index <- length(rv$calibration_redo)
+      snapshot <- rv$calibration_redo[[index]]
+      rv$calibration_redo <- if (index == 1L) list() else rv$calibration_redo[-index]
+      rv$calibration_history <- append_history(
+        rv$calibration_history, calibration_state_snapshot()
+      )
+      restore_calibration_state(snapshot)
+      rv$status <- "좌표설정 변경을 다시 실행했습니다"
+      return(invisible(TRUE))
     }
 
-    rv$data <- snapshot$data
-    rv$selected <- match(snapshot$point_id, rv$data$point_id)
-    rv$point_dirty <- snapshot$point_dirty
-    rv$point_undo <- NULL
-    rv$status <- unsaved_status()
-    refresh_controls(rv$selected)
+    if (!length(rv$point_redo)) {
+      rv$status <- "다시 실행할 포인트 또는 그룹 변경이 없습니다"
+      return(invisible(FALSE))
+    }
+    index <- length(rv$point_redo)
+    snapshot <- rv$point_redo[[index]]
+    rv$point_redo <- if (index == 1L) list() else rv$point_redo[-index]
+    rv$point_history <- append_history(rv$point_history, point_state_snapshot())
+    restore_point_state(snapshot)
+    rv$status <- "포인트 또는 그룹 변경을 다시 실행했습니다"
+    invisible(TRUE)
   }
 
   observeEvent(input$undo, undo_target())
+  observeEvent(input$redo, redo_target())
 
   restore_file_snapshot <- function(snapshot, status) {
     req(rv$dataset, rv$dataset$load_path, !is.null(snapshot))
@@ -3314,7 +3803,7 @@ server <- function(input, output, session) {
       return()
     }
     row <- selected_row()
-    rv$point_undo <- NULL
+    remember_point_change()
     rv$data <- rv$data[-row, , drop = FALSE]
     next_point_id <- if (nrow(rv$data)) {
       rv$data$point_id[min(row, nrow(rv$data))]
@@ -3330,17 +3819,7 @@ server <- function(input, output, session) {
   observeEvent(input$overview_click, {
     req(rv$data)
     if (active_mode_is("calibration")) {
-      req(rv$calibration$type == "projective")
-      x <- round_pixel_coordinate(max(0, min(rv$image_width, input$overview_click$x)))
-      y <- round_pixel_coordinate(max(0, min(rv$image_height, input$overview_click$y)))
-      if (identical(rv$calibration_target, "axis")) {
-        req(rv$calibration_point)
-        fraction <- project_to_axis_edge(x, y, axis_edge(rv$calibration, rv$calibration_point))
-        set_calibration_axis_fraction(rv$calibration_point, fraction)
-      } else {
-        req(identical(rv$calibration_target, "box"), rv$calibration_point)
-        set_calibration_box_point(rv$calibration_point, x, y)
-      }
+      set_selected_calibration_position(input$overview_click$x, input$overview_click$y)
       return()
     }
 
@@ -3349,7 +3828,7 @@ server <- function(input, output, session) {
       req(!is.na(series_row(series_id)))
       x <- round_pixel_coordinate(max(0, min(rv$image_width, input$overview_click$x)))
       y <- round_pixel_coordinate(max(0, min(rv$image_height, input$overview_click$y)))
-      rv$point_undo <- NULL
+      remember_point_change()
       point_id <- if (nrow(rv$data)) max(rv$data$point_id) + 1L else 1L
       new_row <- data.frame(
         point_id = point_id, series_id = series_id,
@@ -3373,6 +3852,22 @@ server <- function(input, output, session) {
     row <- which.min(distance)
     select_point_id(rv$data$point_id[row])
   })
+
+  observeEvent(input$zoom_click, {
+    req(rv$data)
+    if (active_mode_is("calibration")) {
+      set_selected_calibration_position(input$zoom_click$x, input$zoom_click$y)
+      return()
+    }
+    if (rv$add_mode) {
+      rv$status <- "포인트 연속추가는 원본 이미지에서 진행하세요"
+      return()
+    }
+    set_selected_point_position(
+      input$zoom_click$x, input$zoom_click$y,
+      "확대 화면에서 포인트 위치를 변경했습니다"
+    )
+  }, ignoreInit = TRUE)
 
   draw_plot_window <- function(xlim = NULL, ylim = NULL, background = "white") {
     width <- rv$image_width

@@ -25,6 +25,13 @@ expect_equal <- function(actual, expected, label, tolerance = 1e-8) {
 }
 
 calibration <- app$new_project_calibration(100, 100)
+history <- list()
+for (value in seq_len(55)) {
+  history <- app$append_history(history, value)
+}
+expect_equal(length(history), 50L, "편집 이력 최대 개수")
+expect_equal(unlist(history[c(1, 50)]), c(6, 55), "편집 이력 오래된 항목 제거")
+
 folder_fixture <- tempfile("tiny-plot-digitizer-folder-")
 dir.create(folder_fixture)
 on.exit(unlink(folder_fixture, recursive = TRUE), add = TRUE)
@@ -38,6 +45,32 @@ expect_equal(
   app$default_working_folder(folder_fixture, development_folder),
   normalizePath(development_folder), "개발 폴더 기본값"
 )
+
+draft_path <- file.path(folder_fixture, "recovery-draft.rds")
+draft <- list(
+  version = app$recovery_draft_version,
+  saved_at = as.numeric(Sys.time()),
+  dataset = list(
+    key = "new::source.png", source_path = "source.png",
+    load_path = NULL, label = "[복구] source.png"
+  ),
+  image_width = 100, image_height = 100,
+  data = app$empty_points(), series = app$default_groups(),
+  calibration = calibration,
+  point_baseline_data = app$empty_points(),
+  series_baseline = app$default_groups(),
+  calibration_baseline = calibration,
+  point_dirty = TRUE, calibration_dirty = FALSE,
+  selected_point_id = NULL, active_edit_mode = "point",
+  calibration_target = NULL, calibration_point = NULL,
+  save_name_mode = "current", save_name_suffix = "-digitized",
+  save_name_custom = "source",
+  initial_file_snapshot = NULL, latest_saved_snapshot = NULL,
+  disk_file_snapshot = NULL
+)
+app$atomic_write_recovery_draft(draft, draft_path)
+recovered_draft <- app$read_recovery_draft(draft_path)
+expect_equal(recovered_draft$version, app$recovery_draft_version, "복구 draft 왕복")
 
 expect_equal(
   app$axis_point_marker(calibration, "x1"), "triangle_up", "하단 X축 마커 방향"

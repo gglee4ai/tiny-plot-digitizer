@@ -72,6 +72,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         try? logHandle?.close()
         try? FileManager.default.removeItem(at: dirtyStateFileURL)
+        try? FileManager.default.removeItem(at: recoveryDraftFileURL)
     }
 
     private func installMainMenu() {
@@ -151,6 +152,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             environment["DIGITIZER_PORT"] = String(port)
             try prepareDirtyStateFile()
             environment["DIGITIZER_DIRTY_STATE_FILE"] = dirtyStateFileURL.path
+            environment["DIGITIZER_DRAFT_FILE"] = recoveryDraftFileURL.path
             environment["PATH"] = [
                 "/opt/homebrew/bin",
                 "/usr/local/bin",
@@ -256,6 +258,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Tiny Plot Digitizer")
             .appendingPathComponent("dirty-state")
+    }
+
+    private var recoveryDraftFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Tiny Plot Digitizer")
+            .appendingPathComponent("recovery-draft.rds")
     }
 
     private var hasUnsavedChanges: Bool {
