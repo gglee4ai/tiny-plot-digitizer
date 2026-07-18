@@ -663,6 +663,12 @@ draw_axis_point_marker <- function(x, y, marker, color, cex = 1.35) {
   invisible()
 }
 
+editing_colors <- c(
+  calibration = "#304FFE",
+  calibration_grid = "#304FFE80",
+  selection = "#FF0000"
+)
+
 draw_calibration_grid <- function(
   calibration, selected_box_point = NULL, selected_axis_point = NULL,
   box_only = FALSE
@@ -671,24 +677,28 @@ draw_calibration_grid <- function(
 
   corners <- calibration_corners(calibration, close = TRUE)
   if (box_only) {
-    lines(corners$pixel_x, corners$pixel_y, col = "#304FFE", lwd = 1.4)
+    lines(corners$pixel_x, corners$pixel_y,
+          col = editing_colors[["calibration"]], lwd = 1.4)
     return(invisible())
   }
 
   for (fraction in c(0.25, 0.5, 0.75)) {
     vertical <- project_unit_to_pixels(c(fraction, fraction), c(0, 1), calibration)
     horizontal <- project_unit_to_pixels(c(0, 1), c(fraction, fraction), calibration)
-    lines(vertical$pixel_x, vertical$pixel_y, col = "#304FFE80", lwd = 0.8)
-    lines(horizontal$pixel_x, horizontal$pixel_y, col = "#304FFE80", lwd = 0.8)
+    lines(vertical$pixel_x, vertical$pixel_y,
+          col = editing_colors[["calibration_grid"]], lwd = 0.8)
+    lines(horizontal$pixel_x, horizontal$pixel_y,
+          col = editing_colors[["calibration_grid"]], lwd = 0.8)
   }
 
-  lines(corners$pixel_x, corners$pixel_y, col = "#304FFE", lwd = 1.4)
+  lines(corners$pixel_x, corners$pixel_y,
+        col = editing_colors[["calibration"]], lwd = 1.4)
   corner_points <- corners[seq_len(4), ]
   unselected_corners <- is.null(selected_box_point) |
     corner_points$corner != selected_box_point
   points(
     corner_points$pixel_x[unselected_corners], corner_points$pixel_y[unselected_corners],
-    pch = 16, col = "#304FFE", cex = 0.55
+    pch = 16, col = editing_colors[["calibration"]], cex = 0.55
   )
 
   axis_points <- calibration_axis_points(calibration)
@@ -697,7 +707,7 @@ draw_calibration_grid <- function(
     y <- axis_points$pixel_y[index]
     point_color <- if (
       !is.null(selected_axis_point) && axis_points$axis_point[index] == selected_axis_point
-    ) "#FF0000" else "#304FFE"
+    ) editing_colors[["selection"]] else editing_colors[["calibration"]]
     draw_axis_point_marker(
       x, y,
       marker = axis_point_marker(calibration, axis_points$axis_point[index]),
@@ -708,7 +718,7 @@ draw_calibration_grid <- function(
   if (!is.null(selected_box_point) && selected_box_point %in% corner_points$corner) {
     selected <- corner_points[corner_points$corner == selected_box_point, ]
     points(selected$pixel_x, selected$pixel_y,
-           pch = 16, col = "#FF0000", cex = 0.7)
+           pch = 16, col = editing_colors[["selection"]], cex = 0.7)
   }
 
   invisible()
@@ -993,6 +1003,68 @@ series_from_metadata <- function(value) {
   series
 }
 
+read_digitizing_project <- function(
+    project_path, source_path, image_width, image_height) {
+  metadata <- read_csv_metadata(project_path)
+  source_metadata <- source_image_metadata(metadata)
+  if (is.null(source_metadata) ||
+      !identical(source_metadata$filename, basename(source_path))) {
+    stop("CSV에서 원본 이미지 정보를 읽을 수 없습니다: ", project_path)
+  }
+  if (source_metadata$width != image_width ||
+      source_metadata$height != image_height) {
+    stop(sprintf(
+      "원본 이미지 크기가 CSV에 저장된 정보와 다릅니다: 저장 %dx%d, 현재 %dx%d",
+      source_metadata$width, source_metadata$height, image_width, image_height
+    ))
+  }
+
+  saved_data <- read.csv(project_path, comment.char = "#", check.names = FALSE)
+  required <- c("group", "pixel_x", "pixel_y")
+  if (!all(required %in% names(saved_data))) {
+    stop("Tiny Plot Digitizer 형식의 CSV가 아닙니다: ", project_path)
+  }
+
+  calibration <- parse_projective_calibration(metadata, names(saved_data))
+  if (is.null(calibration)) {
+    stop("축 설정을 읽을 수 없습니다: ", project_path)
+  }
+  persisted_series <- series_from_metadata(metadata$display_styles)
+  data <- saved_data[required]
+  group_rows <- match(as.character(data$group), persisted_series$name)
+  if (anyNA(group_rows)) {
+    stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
+  }
+  data$group <- persisted_series$id[group_rows]
+  names(data)[names(data) == "group"] <- "series_id"
+  data$point_id <- if ("point_id" %in% names(saved_data)) {
+    point_ids <- suppressWarnings(as.numeric(saved_data$point_id))
+    if (any(!is.finite(point_ids)) || any(point_ids != round(point_ids))) {
+      stop("포인트 번호는 중복되지 않는 양의 정수여야 합니다")
+    }
+    as.integer(point_ids)
+  } else {
+    seq_len(nrow(data))
+  }
+  data <- data[c("point_id", "series_id", "pixel_x", "pixel_y")]
+  data$series_id <- as.integer(data$series_id)
+  data$pixel_x <- as.numeric(data$pixel_x)
+  data$pixel_y <- as.numeric(data$pixel_y)
+  if (anyNA(data$point_id) || any(data$point_id < 1L) ||
+      anyDuplicated(data$point_id)) {
+    stop("포인트 번호는 중복되지 않는 양의 정수여야 합니다")
+  }
+  if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
+    stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
+  }
+
+  list(
+    data = data,
+    calibration = calibration,
+    series = restore_default_groups(persisted_series)
+  )
+}
+
 quote_project_header <- function(value) {
   value <- as.character(value)
   if (length(value) != 1L || is.na(value)) {
@@ -1209,15 +1281,11 @@ box_point_display_labels <- c(
   y_axis_end = "Y 끝점", xy_axis_end = "XY 끝점"
 )
 
-ui <- fluidPage(
-  tags$head(
-    tags$title("Tiny Plot Digitizer"),
-    tags$style(HTML("
+app_styles <- HTML("
       body { background: #f7f7f5; color: #202124; }
       .container-fluid { padding: 12px 18px; }
       .app-header { margin: 0 0 10px; }
       .app-title { margin: 0; text-align: right; font-size: 20px; font-weight: 600; line-height: 1.2; }
-      .app-subtitle { margin-top: 1px; text-align: right; font-size: 12px; line-height: 1.35; color: #555; }
       .app-version { text-align: right; font-size: 12px; line-height: 1.35; color: #777; }
       h4 { margin: 12px 0 8px; font-size: 14px; font-weight: 600; }
       .editor-layout { display: grid; grid-template-columns: 300px minmax(0, 2fr) minmax(280px, 1fr); margin: 0; }
@@ -1367,8 +1435,9 @@ ui <- fluidPage(
       #zoom_marker_glyph { display: none; }
       .btn-primary { background: #2f5d50; border-color: #2f5d50; }
       .btn-primary:hover { background: #24483e; border-color: #24483e; }
-    ")),
-    tags$script(HTML("
+    ")
+
+app_script <- HTML("
       var unsavedChangesPending = false;
 
       Shiny.addCustomMessageHandler('set-unsaved-state', function(message) {
@@ -1862,8 +1931,16 @@ ui <- fluidPage(
           nonce: Date.now()
         }, {priority: 'event'});
       });
-    "))
-  ),
+    ")
+
+app_head <- tags$head(
+  tags$title("Tiny Plot Digitizer"),
+  tags$style(app_styles),
+  tags$script(app_script)
+)
+
+ui <- fluidPage(
+  app_head,
   fluidRow(
     class = "editor-layout",
     column(
@@ -2150,7 +2227,7 @@ ui <- fluidPage(
             tags$circle(
               id = "zoom_marker_guide_ring", cx = 0, cy = 0, r = 20,
               fill = "none",
-              stroke = "#FF0000", `stroke-width` = 2
+              stroke = editing_colors[["selection"]], `stroke-width` = 2
             ),
             tags$path(
               id = "zoom_marker_point", fill = "none",
@@ -2338,6 +2415,29 @@ server <- function(input, output, session) {
       NULL
     }
   ))
+
+  show_notice_modal <- function(title, content, close_label = "닫기") {
+    showModal(modalDialog(
+      title = title,
+      content,
+      footer = modalButton(close_label),
+      easyClose = TRUE
+    ))
+  }
+
+  show_confirmation_modal <- function(
+      title, content, confirm_id, confirm_label,
+      confirm_class = "btn-primary", cancel_label = "취소") {
+    showModal(modalDialog(
+      title = title,
+      content,
+      footer = tagList(
+        modalButton(cancel_label),
+        actionButton(confirm_id, confirm_label, class = confirm_class)
+      ),
+      easyClose = FALSE
+    ))
+  }
 
   remove_recovery_draft <- function() {
     if (file.exists(recovery_draft_file)) unlink(recovery_draft_file)
@@ -2936,12 +3036,9 @@ server <- function(input, output, session) {
   observeEvent(input$new_project, {
     images <- discover_images(selected_folder())
     if (!length(images)) {
-      showModal(modalDialog(
-        title = "신규 CSV 파일 제작",
-        "현재 작업 폴더에 PNG 이미지가 없습니다.",
-        footer = modalButton("닫기"),
-        easyClose = TRUE
-      ))
+      show_notice_modal(
+        "신규 CSV 파일 제작", "현재 작업 폴더에 PNG 이미지가 없습니다."
+      )
       return()
     }
     labels <- vapply(images, `[[`, character(1), "label")
@@ -3623,77 +3720,29 @@ server <- function(input, output, session) {
     source_image <- load_source_image(dataset$source_path)
     image_height <- source_image$height
     image_width <- source_image$width
-
-    calibration <- new_project_calibration(image_width, image_height)
-    series <- default_groups()
-    data <- empty_points()
-    loaded_project <- FALSE
     project_path <- dataset$load_path
-
-    if (!is.null(project_path) && file.exists(project_path)) {
-      metadata <- read_csv_metadata(project_path)
-      source_metadata <- source_image_metadata(metadata)
-      if (is.null(source_metadata) ||
-          !identical(source_metadata$filename, basename(dataset$source_path))) {
-        stop("CSV에서 원본 이미지 정보를 읽을 수 없습니다: ", project_path)
-      }
-      if (source_metadata$width != image_width || source_metadata$height != image_height) {
-        stop(sprintf(
-          "원본 이미지 크기가 CSV에 저장된 정보와 다릅니다: 저장 %dx%d, 현재 %dx%d",
-          source_metadata$width, source_metadata$height, image_width, image_height
-        ))
-      }
-      saved_data <- read.csv(project_path, comment.char = "#", check.names = FALSE)
-      required <- c("group", "pixel_x", "pixel_y")
-      if (!all(required %in% names(saved_data))) {
-        stop("Tiny Plot Digitizer 형식의 CSV가 아닙니다: ", project_path)
-      }
-      saved_calibration <- parse_projective_calibration(metadata, names(saved_data))
-      if (is.null(saved_calibration)) {
-        stop("축 설정을 읽을 수 없습니다: ", project_path)
-      }
-      persisted_series <- series_from_metadata(metadata$display_styles)
-      data <- saved_data[required]
-      group_rows <- match(as.character(data$group), persisted_series$name)
-      if (anyNA(group_rows)) {
-        stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
-      }
-      data$group <- persisted_series$id[group_rows]
-      names(data)[names(data) == "group"] <- "series_id"
-      data$point_id <- if ("point_id" %in% names(saved_data)) {
-        point_ids <- suppressWarnings(as.numeric(saved_data$point_id))
-        if (any(!is.finite(point_ids)) || any(point_ids != round(point_ids))) {
-          stop("포인트 번호는 중복되지 않는 양의 정수여야 합니다")
-        }
-        as.integer(point_ids)
-      } else {
-        seq_len(nrow(data))
-      }
-      data <- data[c("point_id", "series_id", "pixel_x", "pixel_y")]
-      data$series_id <- as.integer(data$series_id)
-      data$pixel_x <- as.numeric(data$pixel_x)
-      data$pixel_y <- as.numeric(data$pixel_y)
-      if (anyNA(data$point_id) || any(data$point_id < 1L) || anyDuplicated(data$point_id)) {
-        stop("포인트 번호는 중복되지 않는 양의 정수여야 합니다")
-      }
-      if (nrow(data) && any(!data$series_id %in% persisted_series$id)) {
-        stop("CSV 데이터와 그룹 정보가 일치하지 않습니다")
-      }
-      saved_series <- restore_default_groups(persisted_series)
-      calibration <- saved_calibration
-      series <- saved_series
-      loaded_project <- TRUE
+    loaded_project <- !is.null(project_path) && file.exists(project_path)
+    project <- if (loaded_project) {
+      read_digitizing_project(
+        project_path, dataset$source_path, image_width, image_height
+      )
+    } else {
+      list(
+        data = empty_points(),
+        calibration = new_project_calibration(image_width, image_height),
+        series = default_groups()
+      )
     }
 
     disk_snapshot <- if (loaded_project) read_file_bytes(project_path) else NULL
 
-    rv$data <- data
+    rv$data <- project$data
     rv$image_width <- image_width
     rv$image_height <- image_height
     rv$raster_matrix <- source_image$raster_matrix
     rv$dataset <- dataset
-    rv$calibration <- calibration
-    rv$series <- series
+    rv$calibration <- project$calibration
+    rv$series <- project$series
     sort_points()
     capture_all_baselines()
     rv$pending_edit_mode <- NULL
@@ -3980,12 +4029,11 @@ server <- function(input, output, session) {
       return()
     }
     if (nrow(rv$data) && any(rv$data$series_id == id)) {
-      showModal(modalDialog(
-        title = "그룹 제거 불가",
+      show_notice_modal(
+        "그룹 제거 불가",
         paste0("'", rv$series$name[row], "' 그룹에 포인트가 있어 제거할 수 없습니다."),
-        easyClose = TRUE,
-        footer = modalButton("확인")
-      ))
+        close_label = "확인"
+      )
       return()
     }
     removed_name <- rv$series$name[row]
@@ -4040,12 +4088,11 @@ server <- function(input, output, session) {
     target_choices <- target_choices[unname(target_choices) != as.character(source_series_id)]
     if (is.na(source_row) || !length(target_choices)) {
       rv$pending_point_series_change <- NULL
-      showModal(modalDialog(
-        title = "포인트 그룹변경",
+      show_notice_modal(
+        "포인트 그룹변경",
         "변경할 다른 그룹이 없습니다. 그룹을 먼저 추가하세요.",
-        footer = modalButton("확인"),
-        easyClose = TRUE
-      ))
+        close_label = "확인"
+      )
       return()
     }
     group_rows <- which(rv$data$series_id == source_series_id)
@@ -4818,24 +4865,15 @@ server <- function(input, output, session) {
   observeEvent(input$restore_saved, {
     req(rv$dataset)
     if (is.null(rv$dataset$load_path) || is.null(rv$latest_saved_snapshot)) {
-      showModal(modalDialog(
-        title = "마지막 저장으로",
-        "아직 파일로 저장된 상태가 없습니다.",
-        footer = modalButton("닫기"),
-        easyClose = TRUE
-      ))
+      show_notice_modal("마지막 저장으로", "아직 파일로 저장된 상태가 없습니다.")
       return()
     }
     if (!saved_restore_pending()) return()
-    showModal(modalDialog(
-      title = "마지막 저장으로",
+    show_confirmation_modal(
+      "마지막 저장으로",
       "마지막 저장본으로 복귀하시겠습니까? 저장되지 않은 변경은 모두 사라집니다.",
-      footer = tagList(
-        modalButton("취소"),
-        actionButton("confirm_restore_saved", "복귀", class = "btn-warning")
-      ),
-      easyClose = FALSE
-    ))
+      "confirm_restore_saved", "복귀", confirm_class = "btn-warning"
+    )
   })
 
   observeEvent(input$confirm_restore_saved, {
@@ -4849,27 +4887,20 @@ server <- function(input, output, session) {
   observeEvent(input$reload, {
     req(rv$dataset)
     if (is.null(rv$dataset$load_path) || is.null(rv$initial_file_snapshot)) {
-      showModal(modalDialog(
-        title = "처음 상태로",
-        "신규 파일에는 처음 불러온 CSV 상태가 없습니다.",
-        footer = modalButton("닫기"),
-        easyClose = TRUE
-      ))
+      show_notice_modal(
+        "처음 상태로", "신규 파일에는 처음 불러온 CSV 상태가 없습니다."
+      )
       return()
     }
     if (!initial_restore_pending()) return()
-    showModal(modalDialog(
-      title = "처음 상태로",
+    show_confirmation_modal(
+      "처음 상태로",
       paste0(
         "처음 불러온 CSV 상태로 돌아가시겠습니까? ",
         "현재 파일을 최초 상태로 덮어쓰며 이후 저장 내용과 저장되지 않은 변경이 모두 사라집니다."
       ),
-      footer = tagList(
-        modalButton("취소"),
-        actionButton("confirm_reload", "처음 상태로", class = "btn-danger")
-      ),
-      easyClose = FALSE
-    ))
+      "confirm_reload", "처음 상태로", confirm_class = "btn-danger"
+    )
   })
 
   observeEvent(input$confirm_reload, {
@@ -5095,7 +5126,7 @@ server <- function(input, output, session) {
     if (is.null(row) || !length(row) || !nrow(rv$data)) return(invisible())
     points(
       rv$data$pixel_x[row], rv$data$pixel_y[row],
-      pch = 1, col = "#FF0000", cex = cex, lwd = 2
+      pch = 1, col = editing_colors[["selection"]], cex = cex, lwd = 2
     )
     invisible()
   }

@@ -98,6 +98,17 @@ if (is.null(legacy_calibration) ||
     !app$valid_projective_calibration(legacy_calibration)) {
   stop("구버전 CSV 좌표 설정 헤더를 읽지 못했습니다", call. = FALSE)
 }
+legacy_project <- app$read_digitizing_project(
+  legacy_project_path, "legacy-source.png", image_width = 100, image_height = 100
+)
+expect_equal(
+  legacy_project$data$point_id, 1L,
+  "구버전 CSV의 포인트 번호 생성"
+)
+expect_equal(
+  legacy_project$series$name, 'legacy: "series"',
+  "구버전 CSV 프로젝트 그룹 읽기"
+)
 
 other_metadata_path <- file.path(folder_fixture, "other-metadata.csv")
 writeLines(c(
@@ -315,6 +326,21 @@ if (!identical(saved_series$name, c("group01", "empty_group"))) {
 saved_calibration <- app$parse_projective_calibration(metadata, names(saved_data))
 if (is.null(saved_calibration) || !app$valid_projective_calibration(saved_calibration)) {
   stop("좌표 설정 메타데이터 왕복 실패", call. = FALSE)
+}
+
+loaded_project <- app$read_digitizing_project(
+  project_path, "source.png", image_width = 100, image_height = 100
+)
+expect_equal(
+  loaded_project$data$point_id, c(7L, 12L),
+  "프로젝트 파일의 포인트 번호 읽기"
+)
+expect_equal(
+  loaded_project$series$name, c("group01", "empty_group"),
+  "프로젝트 파일의 빈 그룹 읽기"
+)
+if (!app$valid_projective_calibration(loaded_project$calibration)) {
+  stop("프로젝트 파일의 좌표 설정 읽기 실패", call. = FALSE)
 }
 
 cat("Tiny Plot Digitizer 핵심 회귀 테스트 통과\n")
